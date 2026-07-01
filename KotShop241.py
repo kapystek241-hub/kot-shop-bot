@@ -1,11 +1,9 @@
 import asyncio
 import os
-import time
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 
@@ -22,7 +20,7 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- Тексты (для удобства редактирования) ---
+# --- Тексты ---
 
 TEXT_START = (
     "Доброго времени суток!\n\n"
@@ -81,13 +79,16 @@ TEXT_TOURNAMENT_FORM = (
 )
 TEXT_CONFIRM_REQUEST = "Вы хотите подтвердить участие?"
 
-# --- Клавиатуры ---
+
+# --- Клавиатуры (СТРОГО ПО 2 КНОПКИ В РЯД) ---
 
 def kb_start():
     builder = InlineKeyboardBuilder()
     builder.button(text="Меню", callback_data="menu_main")
     builder.button(text="Документы магазина", callback_data="docs_shop")
+    builder.adjust(2)  # <-- ГЛАВНОЕ ИЗМЕНЕНИЕ: ровно 2 кнопки в строке
     return builder.as_markup()
+
 
 def kb_menu_level1():
     builder = InlineKeyboardBuilder()
@@ -97,24 +98,33 @@ def kb_menu_level1():
     builder.button(text="1.1 Акции", callback_data="promo_main")
     builder.button(text="1.1 Поддержка", callback_data="support_main")
     builder.button(text="❌ Назад", callback_data="back_to_start")
+    builder.adjust(2)  # <-- СТРОГО ПО 2 В РЯД
     return builder.as_markup()
+
 
 def kb_back_only():
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Назад", callback_data="back_to_menu")
+    # Если кнопка одна, adjust(2) просто поставит её по центру первой строки
+    builder.adjust(2)
     return builder.as_markup()
+
 
 def kb_raffle_claim():
     builder = InlineKeyboardBuilder()
     builder.button(text="Забрать выигрыш", callback_data="claim_win")
     builder.button(text="❌ Назад", callback_data="back_to_raffle")
+    builder.adjust(2)
     return builder.as_markup()
+
 
 def kb_tournament_confirm():
     builder = InlineKeyboardBuilder()
     builder.button(text="Подтвердить", callback_data="confirm_apply")
     builder.button(text="Отменить", callback_data="cancel_apply")
+    builder.adjust(2)
     return builder.as_markup()
+
 
 # --- Вспомогательные функции ---
 
@@ -123,8 +133,8 @@ async def check_subscription(user_id: int) -> bool:
         member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
     except Exception:
-        # Если бот не админ канала или другая ошибка — считаем, что не подписан
         return False
+
 
 async def send_to_admin(text: str, caption: str = None):
     try:
@@ -134,6 +144,7 @@ async def send_to_admin(text: str, caption: str = None):
             await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
     except Exception as e:
         print(f"Не удалось отправить сообщение админу: {e}")
+
 
 # --- Хендлеры ---
 
@@ -145,6 +156,7 @@ async def cmd_start(message: types.Message):
         parse_mode="HTML"
     )
 
+
 @dp.callback_query(F.data == "menu_main")
 async def cb_menu_main(callback: types.CallbackQuery):
     await callback.message.edit_text(
@@ -153,6 +165,7 @@ async def cb_menu_main(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
+
 
 @dp.callback_query(F.data == "docs_shop")
 async def cb_docs_shop(callback: types.CallbackQuery):
@@ -163,6 +176,7 @@ async def cb_docs_shop(callback: types.CallbackQuery):
     )
     await callback.answer()
 
+
 @dp.callback_query(F.data == "back_to_start")
 async def cb_back_start(callback: types.CallbackQuery):
     await callback.message.edit_text(
@@ -170,6 +184,7 @@ async def cb_back_start(callback: types.CallbackQuery):
         reply_markup=kb_start()
     )
     await callback.answer()
+
 
 @dp.callback_query(F.data == "back_to_menu")
 async def cb_back_menu(callback: types.CallbackQuery):
@@ -180,16 +195,26 @@ async def cb_back_menu(callback: types.CallbackQuery):
     )
     await callback.answer()
 
+
 @dp.callback_query(F.data == "item_buy")
 async def cb_buy(callback: types.CallbackQuery):
-    # Имитация задержки 0.5 сек
     await callback.message.edit_text(text=TEXT_WAIT)
     await asyncio.sleep(0.5)
+
+    # Для товаров тоже делаем по 2 кнопки
+    items_builder = InlineKeyboardBuilder()
+    items_builder.button(text="1.2 Товар 1", callback_data="dummy_1")
+    items_builder.button(text="1.2 Товар 2", callback_data="dummy_2")
+    items_builder.button(text="1.2 Товар 3", callback_data="dummy_3")
+    items_builder.button(text="❌ Назад", callback_data="back_to_menu")
+    items_builder.adjust(2)
+
     await callback.message.edit_text(
         text=TEXT_SELECT_ITEM,
-        reply_markup=InlineKeyboardBuilder().button(text="Пример товара 1", callback_data="dummy").as_markup()
+        reply_markup=items_builder.as_markup()
     )
     await callback.answer()
+
 
 @dp.callback_query(F.data == "raffle_main")
 async def cb_raffle_main(callback: types.CallbackQuery):
@@ -209,6 +234,7 @@ async def cb_raffle_main(callback: types.CallbackQuery):
     )
     await callback.answer()
 
+
 @dp.callback_query(F.data == "claim_win")
 async def cb_claim_win(callback: types.CallbackQuery):
     is_sub = await check_subscription(callback.from_user.id)
@@ -223,32 +249,40 @@ async def cb_claim_win(callback: types.CallbackQuery):
     )
     await callback.answer()
 
+
 @dp.callback_query(F.data == "back_to_raffle")
 async def cb_back_raffle(callback: types.CallbackQuery):
     await cb_raffle_main(callback)
 
+
 @dp.callback_query(F.data == "tournament_main")
 async def cb_tournament_main(callback: types.CallbackQuery):
+    tourney_builder = InlineKeyboardBuilder()
+    tourney_builder.button(text="1.4 Принять участие", callback_data="apply_tournament")
+    tourney_builder.button(text="❌ Назад", callback_data="back_to_menu")
+    tourney_builder.adjust(2)
+
     await callback.message.edit_text(
         text="Выберите интересующий раздел",
-        reply_markup=InlineKeyboardBuilder()
-        .button(text="1.4 Принять участие", callback_data="apply_tournament")
-        .button(text="❌ Назад", callback_data="back_to_menu")
-        .as_markup()
+        reply_markup=tourney_builder.as_markup()
     )
     await callback.answer()
 
+
 @dp.callback_query(F.data == "apply_tournament")
 async def cb_apply_tournament(callback: types.CallbackQuery):
+    form_builder = InlineKeyboardBuilder()
+    form_builder.button(text="Я заполнил форму", callback_data="ready_form")
+    form_builder.button(text="❌ Назад", callback_data="back_to_tournament")
+    form_builder.adjust(2)
+
     await callback.message.edit_text(
         text=TEXT_TOURNAMENT_FORM,
-        reply_markup=InlineKeyboardBuilder()
-        .button(text="Я заполнил форму", callback_data="ready_form")
-        .button(text="❌ Назад", callback_data="back_to_tournament")
-        .as_markup(),
+        reply_markup=form_builder.as_markup(),
         parse_mode="HTML"
     )
     await callback.answer()
+
 
 @dp.callback_query(F.data == "ready_form")
 async def cb_ready_form(callback: types.CallbackQuery):
@@ -258,6 +292,7 @@ async def cb_ready_form(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
+
 
 @dp.callback_query(F.data == "confirm_apply")
 async def cb_confirm_apply(callback: types.CallbackQuery):
@@ -272,22 +307,27 @@ async def cb_confirm_apply(callback: types.CallbackQuery):
     await callback.message.edit_text("✅ Заявка отправлена! Ожидайте связи с менеджером.")
     await callback.answer()
 
+
 @dp.callback_query(F.data == "cancel_apply")
 async def cb_cancel_apply(callback: types.CallbackQuery):
     await callback.message.edit_text("Заявка отменена.")
     await callback.answer()
 
+
 @dp.callback_query(F.data == "back_to_tournament")
 async def cb_back_tournament(callback: types.CallbackQuery):
     await cb_tournament_main(callback)
 
-# Заглушки для остальных кнопок (Акции, Поддержка)
+
+# Заглушки для остальных кнопок
 @dp.callback_query(F.data.in_({"promo_main", "support_main"}))
 async def cb_placeholders(callback: types.CallbackQuery):
     await callback.answer("Раздел в разработке", show_alert=True)
 
+
 async def main():
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
