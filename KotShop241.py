@@ -92,11 +92,11 @@ def kb_start():
 
 def kb_menu_level1():
     builder = InlineKeyboardBuilder()
-    builder.button(text="1.1 Купить", callback_data="item_buy")
-    builder.button(text="1.1 Розыгрыш", callback_data="raffle_main")
-    builder.button(text="1.1 Турнир", callback_data="tournament_main")
-    builder.button(text="1.1 Акции", callback_data="promo_main")
-    builder.button(text="1.1 Поддержка", callback_data="support_main")
+    builder.button(text="Купить", callback_data="item_buy")
+    builder.button(text="Розыгрыш", callback_data="raffle_main")
+    builder.button(text="Турнир", callback_data="tournament_main")
+    builder.button(text="Акции", callback_data="promo_main")
+    builder.button(text="Поддержка", callback_data="support_main")
     builder.button(text="❌ Назад", callback_data="back_to_start")
     builder.adjust(2)  # <-- СТРОГО ПО 2 В РЯД
     return builder.as_markup()
@@ -203,9 +203,9 @@ async def cb_buy(callback: types.CallbackQuery):
 
     # Для товаров тоже делаем по 2 кнопки
     items_builder = InlineKeyboardBuilder()
-    items_builder.button(text="1.2 Товар 1", callback_data="dummy_1")
-    items_builder.button(text="1.2 Товар 2", callback_data="dummy_2")
-    items_builder.button(text="1.2 Товар 3", callback_data="dummy_3")
+    items_builder.button(text="Товар 1", callback_data="dummy_1")
+    items_builder.button(text="Товар 2", callback_data="dummy_2")
+    items_builder.button(text="Товар 3", callback_data="dummy_3")
     items_builder.button(text="❌ Назад", callback_data="back_to_menu")
     items_builder.adjust(2)
 
@@ -258,7 +258,7 @@ async def cb_back_raffle(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "tournament_main")
 async def cb_tournament_main(callback: types.CallbackQuery):
     tourney_builder = InlineKeyboardBuilder()
-    tourney_builder.button(text="1.4 Принять участие", callback_data="apply_tournament")
+    tourney_builder.button(text="Принять участие", callback_data="apply_tournament")
     tourney_builder.button(text="❌ Назад", callback_data="back_to_menu")
     tourney_builder.adjust(2)
 
