@@ -8,132 +8,110 @@ from dotenv import load_dotenv
 # Загружаем переменные окружения из .env
 load_dotenv()
 
-# Получаем токен из .env (переменная должна называться BOT_TOKEN)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("Токен не найден. Проверьте, что в файле .env есть строка BOT_TOKEN=ваш_токен")
 
-ADMIN_ID = 7309972832  # ID администратора для пересылки сообщений поддержки
+ADMIN_ID = 7309972832  # ID администратора
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Хранилище корзины: user_id -> {"uc_amount": int, "price": int}
-user_cart = {}
-
-# Хранилище ожидания UID: user_id -> uc_amount, price
-user_awaiting_uid = {}
+# Хранилища (в продакшене лучше использовать БД)
+user_cart = {}          # user_id -> {"uc_amount": int, "price": int}
+user_awaiting_uid = {}  # user_id -> (uc_amount, price)
+support_waiting_users = set()
 
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
-    btn_menu = InlineKeyboardButton(text="Меню", callback_data="menu_main")
-    btn_docs = InlineKeyboardButton(text="Документация магазина", callback_data="docs")
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn_menu],
-        [btn_docs]
+        [InlineKeyboardButton(text="Меню", callback_data="menu_main")],
+        [InlineKeyboardButton(text="Документация магазина", callback_data="docs")]
     ])
 
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
-    btn_shop = InlineKeyboardButton(text="🛒 Магазин", callback_data="shop")
-    btn_support = InlineKeyboardButton(text="💬 Поддержка", callback_data="support")
-    btn_tournament = InlineKeyboardButton(text="🏆 Турнир", callback_data="tournament")
-    btn_promo = InlineKeyboardButton(text="🔥 Акции", callback_data="promo")
-    btn_draw = InlineKeyboardButton(text="🎁 Розыгрыш", callback_data="draw")
-    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_start")
-
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn_shop],
-        [btn_support],
-        [btn_tournament, btn_promo],
-        [btn_draw],
-        [btn_back]
+        [InlineKeyboardButton(text="🛒 Магазин", callback_data="shop")],
+        [InlineKeyboardButton(text="💬 Поддержка", callback_data="support")],
+        [InlineKeyboardButton(text="🏆 Турнир", callback_data="tournament"),
+         InlineKeyboardButton(text="🔥 Акции", callback_data="promo")],
+        [InlineKeyboardButton(text="🎁 Розыгрыш", callback_data="draw")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_start")]
     ])
 
 
 def get_shop_keyboard() -> InlineKeyboardMarkup:
-    btn_pubg = InlineKeyboardButton(text="🎮 PUBG Mobile", callback_data="pubg_shop")
-    btn_steam = InlineKeyboardButton(text="🖥️ Steam РФ", callback_data="steam_shop")
-    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn_pubg],
-        [btn_steam],
-        [btn_back]
+        [InlineKeyboardButton(text="🎮 PUBG Mobile", callback_data="pubg_shop")],
+        [InlineKeyboardButton(text="🖥️ Steam РФ", callback_data="steam_shop")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
 
 
 def get_support_keyboard() -> InlineKeyboardMarkup:
-    btn_tg = InlineKeyboardButton(text="✍️ Написать через Telegram", callback_data="support_tg")
-    btn_manager = InlineKeyboardButton(text="📞 Написать менеджеру", url="https://t.me/KotShop2415")
-    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn_tg],
-        [btn_manager],
-        [btn_back]
+        [InlineKeyboardButton(text="✍️ Написать через Telegram", callback_data="support_tg")],
+        [InlineKeyboardButton(text="📞 Написать менеджеру", url="https://t.me/KotShop2415")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
 
 
 def get_tournament_keyboard() -> InlineKeyboardMarkup:
-    btn_rules = InlineKeyboardButton(text="📖 Правила проведения турнира", callback_data="tournament_rules")
-    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn_rules],
-        [btn_back]
+        [InlineKeyboardButton(text="📖 Правила проведения турнира", callback_data="tournament_rules")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
 
 
 def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
-    btn_uc = InlineKeyboardButton(text="💎 UC по ID", callback_data="uc_by_id")
-    btn_other = InlineKeyboardButton(text="🛍️ Другие товары", callback_data="other_items")
-    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="shop")
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn_uc],
-        [btn_other],
-        [btn_back]
+        [InlineKeyboardButton(text="💎 UC по ID", callback_data="uc_by_id")],
+        [InlineKeyboardButton(text="🛍️ Другие товары", callback_data="other_items")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="shop")]
     ])
 
 
-# Кнопки с ценами UC (полный список из ТЗ)
+# Полный список UC с ценами (как в ТЗ)
+UC_PRICES = [
+    ("60 UC — 74 ₽", "uc_select_60"),
+    ("120 UC — 145 ₽", "uc_select_120"),
+    ("180 UC — 221 ₽", "uc_select_180"),
+    ("240 UC — 294 ₽", "uc_select_240"),
+    ("325 UC — 431 ₽", "uc_select_325"),
+    ("385 UC — 442 ₽", "uc_select_385"),
+    ("445 UC — 516 ₽", "uc_select_445"),
+    ("660 UC — 749 ₽", "uc_select_660"),
+    ("720 UC — 824 ₽", "uc_select_720"),
+    ("985 UC — 1089 ₽", "uc_select_985"),
+    ("1320 UC — 1489 ₽", "uc_select_1320"),
+    ("1800 UC — 1799 ₽", "uc_select_1800"),
+    ("1920 UC — 1989 ₽", "uc_select_1920"),
+    ("2125 UC — 2179 ₽", "uc_select_2125"),
+    ("2460 UC — 2587 ₽", "uc_select_2460"),
+    ("3850 UC — 3632 ₽", "uc_select_3850"),
+    ("4510 UC — 4372 ₽", "uc_select_4510"),
+    ("5650 UC — 5452 ₽", "uc_select_5650"),
+    ("8100 UC — 7267 ₽", "uc_select_8100"),
+    ("9900 UC — 8989 ₽", "uc_select_9900"),
+    ("11950 UC — 10914 ₽", "uc_select_11950"),
+    ("16200 UC — 14568 ₽", "uc_select_16200"),
+    ("24300 UC — 21852 ₽", "uc_select_24300"),
+    ("32400 UC — 28753 ₽", "uc_select_32400"),
+    ("40500 UC — 35955 ₽", "uc_select_40500"),
+    ("81000 UC — 71299 ₽", "uc_select_81000"),
+]
+
 def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
-    prices = [
-        ("60 UC — 74 ₽", "uc_select_60"),
-        ("120 UC — 145 ₽", "uc_select_120"),
-        ("180 UC — 221 ₽", "uc_select_180"),
-        ("240 UC — 294 ₽", "uc_select_240"),
-        ("325 UC — 431 ₽", "uc_select_325"),
-        ("385 UC — 442 ₽", "uc_select_385"),
-        ("445 UC — 516 ₽", "uc_select_445"),
-        ("660 UC — 749 ₽", "uc_select_660"),
-        ("720 UC — 824 ₽", "uc_select_720"),
-        ("985 UC — 1089 ₽", "uc_select_985"),
-        ("1320 UC — 1489 ₽", "uc_select_1320"),
-        ("1800 UC — 1799 ₽", "uc_select_1800"),
-        ("1920 UC — 1989 ₽", "uc_select_1920"),
-        ("2125 UC — 2179 ₽", "uc_select_2125"),
-        ("2460 UC — 2587 ₽", "uc_select_2460"),
-        ("3850 UC — 3632 ₽", "uc_select_3850"),
-        ("4510 UC — 4372 ₽", "uc_select_4510"),
-        ("5650 UC — 5452 ₽", "uc_select_5650"),
-        ("8100 UC — 7267 ₽", "uc_select_8100"),
-        ("9900 UC — 8989 ₽", "uc_select_9900"),
-        ("11950 UC — 10914 ₽", "uc_select_11950"),
-        ("16200 UC — 14568 ₽", "uc_select_16200"),
-        ("24300 UC — 21852 ₽", "uc_select_24300"),
-        ("32400 UC — 28753 ₽", "uc_select_32400"),
-        ("40500 UC — 35955 ₽", "uc_select_40500"),
-        ("81000 UC — 71299 ₽", "uc_select_81000"),
-    ]
-    # Разбиваем на строки по 3 кнопки (примерно)
     buttons = []
     row = []
-    for text, data in prices:
+    for text, data in UC_PRICES:
         row.append(InlineKeyboardButton(text=text, callback_data=data))
-        if len(row) == 3:
+        if len(row) == 2:  # По 2 кнопки в ряд
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-
     buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="pubg_shop")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -141,115 +119,48 @@ def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     text = (
-        "Доброго времени суток,\n\n"
-        "Бот постоянно находится в разработке. На данный момент бот работает с 9:00 до 23:00 по мск. "
-        "Причина, по которой бот работает определённое время: бот находится на стадии теста функционала.\n\n"
-        "Покупки, сообщения, розыгрыши доступны.\n\n"
-        "В нашем боте есть возможность ускорить процесс поиска по ключевым словам."
+        "Доброго времени суток!\n\n"
+        "Бот находится в разработке. Работает с 9:00 до 23:00 по МСК.\n"
+        "Покупки, сообщения, розыгрыши доступны."
     )
     await message.answer(text=text, reply_markup=get_start_keyboard())
 
 
-# Обработчик ключевых слов для открытия «Меню»
 @dp.message(F.text.lower().in_(["меню"]))
 async def handle_menu_keyword(message: types.Message):
-    await message.answer(
-        "📋 Главное меню KotShop241:\nВыберите нужный раздел:",
-        reply_markup=get_main_menu_keyboard()
-    )
+    await message.answer("📋 Главное меню KotShop241:\nВыберите нужный раздел:", reply_markup=get_main_menu_keyboard())
 
 
-# Обработчик остальных ключевых слов (Магазин, Поддержка и т.д.)
 @dp.message(F.text.lower().in_(
     ["магазин", "поддержка", "ошибка", "нужна помощь", "турнир", "акции", "акция", "розыгрыш"]
 ))
 async def handle_keywords(message: types.Message):
-    text_lower = message.text.lower()
-    if text_lower == "магазин":
+    t = message.text.lower()
+    if t == "магазин":
         await message.answer("🛒 Раздел «Магазин»", reply_markup=get_shop_keyboard())
-    elif text_lower in ["поддержка", "ошибка", "нужна помощь"]:
+    elif t in ["поддержка", "ошибка", "нужна помощь"]:
         await message.answer(
             "💬 Опишите вашу ошибку или вопрос.\nПоддержка работает с 9:00 до 23:00 по МСК.",
             reply_markup=get_support_keyboard()
         )
-    elif text_lower == "турнир":
+    elif t == "турнир":
         await message.answer("🏆 Раздел «Турнир»", reply_markup=get_tournament_keyboard())
-    elif text_lower in ["акции", "акция"]:
+    elif t in ["акции", "акция"]:
         await message.answer("🔥 Раздел «Акции» — в разработке.", reply_markup=get_main_menu_keyboard())
-    elif text_lower == "розыгрыш":
+    elif t == "розыгрыш":
         await message.answer("🎁 Раздел «Розыгрыш» — в разработке.", reply_markup=get_main_menu_keyboard())
 
 
-# Ключевые слова для PUBG Mobile и UC
 @dp.message(F.text.lower().in_(["pubg", "пабг", "купить uc", "купить юси"]))
 async def handle_pubg_keywords(message: types.Message):
-    await message.answer(
-        "Выберите интересующий раздел:",
-        reply_markup=get_pubg_main_keyboard()
-    )
+    await message.answer("Выберите интересующий раздел:", reply_markup=get_pubg_main_keyboard())
 
 
 @dp.message(F.text.lower().in_(["юси", "uc"]))
 async def handle_uc_keywords(message: types.Message):
-    await message.answer(
-        "Выберите нужное количество UC",
-        reply_markup=get_uc_amount_keyboard()
-    )
+    await message.answer("Выберите нужное количество UC", reply_markup=get_uc_amount_keyboard())
 
 
-# Простой механизм ожидания сообщения для поддержки (без полноценного FSM)
-support_waiting_users = set()
-
-async def set_support_wait_state(user_id: int):
-    support_waiting_users.add(user_id)
-
-
-@dp.message()
-async def handle_messages(message: types.Message):
-    user_id = message.from_user.id
-
-    # Если пользователь сейчас в режиме «написать в поддержку»
-    if user_id in support_waiting_users:
-        try:
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
-            )
-            await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
-        except Exception as e:
-            await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
-        finally:
-            support_waiting_users.discard(user_id)
-        return
-
-    # Если пользователь ожидает ввода UID
-    if user_id in user_awaiting_uid:
-        uid_text = message.text.strip()
-        # Проверка: UID должен начинаться на 5 и быть цифрами
-        if not uid_text.isdigit() or not uid_text.startswith("5"):
-            await message.answer(
-                "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
-            )
-            return
-
-        uc_amount, price = user_awaiting_uid[user_id]
-        user_awaiting_uid.pop(user_id, None)  # убираем ожидание
-
-        text = (
-            f"UC — {uc_amount}\n"
-            f"Цена — {price} ₽\n"
-            f"UID — {uid_text}"
-        )
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_uid_{uc_amount}_{price}_{uid_text}")],
-            [InlineKeyboardButton(text="🔄 Другой UID", callback_data=f"change_uid_{uc_amount}_{price}")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
-        ])
-        await message.answer(text, reply_markup=keyboard)
-        return
-
-
-# Основной обработчик callback-запросов
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
     data = callback.data
@@ -267,26 +178,12 @@ async def callback_handler(callback: types.CallbackQuery):
     elif data == "docs":
         text = (
             "Название магазина: ***KotShop241***\n\n"
-            "Магазин является официальным и использует законные способы предоставления игровой валюты "
-            "или пополнения сервисов в РФ и других странах.\n\n"
-            "ИНН организации: 661912653571\n"
-            "Для проверки вы можете использовать ресурс ФНС.\n\n"
-            "В целях вашей безопасности сторонние ссылки не будут размещаться, за исключением банковских операций. "
-            "Для получения чека требуется написать в поддержку внутри Telegram-бота, раздел находится: Меню → Поддержка → Заполнение формы обращения. "
-            "Чек предоставляется только по просьбе.\n\n"
-            "Проект является коммерческим и не несёт ответственности в случае неправильно указанных данных при заполнении формы покупки. "
-            "В случае если ошибка случилась и товар не доставлен, следует написать в поддержку.\n\n"
-            "При проведении турниров от магазина KotShop241 участники, которые подтвердили участие, автоматически соглашаются с правилами, "
-            "которые находятся в разделе: Меню → Турнир → Правила участия. Штрафы предусмотрены в том же разделе, "
-            "в случае нарушения будут использованы санкции, которые указаны.\n\n"
-            "Для подачи апелляции используйте контакты ниже.\n"
-            "Магазин имеет полное право заблокировать использование сервиса в случае возникновения расследования по отношению к покупателю. "
-            "В случае если вы не согласны с блокировкой, следует написать в поддержку по ссылкам ниже.\n\n"
-            "Связь по почте: Kotshop241@gmail.com\n"
-            "Связь с поддержкой внутри Telegram: @KotShop2415"
+            "ИНН организации: 661912653571\n\n"
+            "Для получения чека напишите в поддержку.\n"
+            "Магазин не несёт ответственности за ошибки в данных при оформлении."
         )
         await callback.message.edit_text(
-            text=text,
+            text,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📋 Меню", callback_data="menu_main")]
@@ -296,21 +193,14 @@ async def callback_handler(callback: types.CallbackQuery):
 
     # Магазин
     elif data == "shop":
-        text = (
-            "Доброго времени суток!\nМагазин проходит стадию разработки, поэтому возможны ошибки. "
-            "В случае возникновения ошибок просьба обратиться в поддержку."
-        )
-        await callback.message.edit_text(text, reply_markup=get_shop_keyboard())
+        await callback.message.edit_text("🛒 Раздел «Магазин»", reply_markup=get_shop_keyboard())
         await callback.answer()
 
-    elif data in ["pubg_shop"]:
-        await callback.message.edit_text(
-            "Выберите интересующий раздел:",
-            reply_markup=get_pubg_main_keyboard()
-        )
+    elif data == "pubg_shop":
+        await callback.message.edit_text("Выберите интересующий раздел:", reply_markup=get_pubg_main_keyboard())
         await callback.answer()
 
-    elif data in ["steam_shop"]:
+    elif data == "steam_shop":
         await callback.message.edit_text("🖥️ Этот раздел находится в разработке.")
         await callback.answer()
 
@@ -324,13 +214,17 @@ async def callback_handler(callback: types.CallbackQuery):
         )
         await callback.answer()
 
-    # Выбор конкретного товара
+    elif data == "other_items":
+        await callback.message.edit_text("🛍️ Другие товары — в разработке.")
+        await callback.answer()
+
+    # Выбор товара
     elif data.startswith("uc_select_"):
         mapping = {
             "uc_select_60": (60, 74),
             "uc_select_120": (120, 145),
             "uc_select_180": (180, 221),
-            "uc_select_240": (240, 294            ),
+            "uc_select_240": (240, 294),
             "uc_select_325": (325, 431),
             "uc_select_385": (385, 442),
             "uc_select_445": (445, 516),
@@ -359,9 +253,7 @@ async def callback_handler(callback: types.CallbackQuery):
             await callback.answer("Ошибка выбора товара.", show_alert=True)
             return
 
-        # Сохраняем в корзину
         user_cart[user_id] = {"uc_amount": uc_amount, "price": price}
-
         await callback.message.edit_text(
             f"🛒 Корзина:\nUC — {uc_amount}\nЦена — {price} ₽\n\nНажмите «Продолжить», чтобы указать UID PUBG Mobile:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -377,51 +269,59 @@ async def callback_handler(callback: types.CallbackQuery):
             await callback.answer("Сначала выберите товар.", show_alert=True)
             return
         cart = user_cart[user_id]
-        # Запоминаем, что пользователь сейчас должен прислать UID для этого заказа
         user_awaiting_uid[user_id] = (cart["uc_amount"], cart["price"])
         await callback.message.edit_text(
             "🆔 Укажите UID PUBG Mobile.\nОн должен состоять только из цифр и начинаться на 5."
         )
         await callback.answer()
 
-    # Кнопка «Другой UID» — сброс ожидания и повторный запрос UID
-    elif data.startswith("change_uid_"):
+    # Поддержка
+    elif data == "support":
+        await callback.message.edit_text(
+            "💬 Опишите вашу ошибку или вопрос.\nПоддержка работает с 9:00 до 23:00 по МСК.",
+            reply_markup=get_support_keyboard()
+        )
+        await callback.answer()
+
+    elif data == "support_tg":
+        await callback.message.edit_text(
+            "✍️ Опишите ошибку или вопрос:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="↩️ Назад", callback_data="support")]
+            ])
+        )
+        support_waiting_users.add(user_id)
+        await callback.answer()
+
+    # Турнир
+    elif data == "tournament":
+        await callback.message.edit_text("🏆 Ознакомьтесь с правилами проведения турнира.", reply_markup=get_tournament_keyboard())
+        await callback.answer()
+    elif data == "tournament_rules":
+        await callback.message.edit_text("📖 Правила турнира: (в разработке)")
+        await callback.answer()
+
+    # Акции/Розыгрыш
+    elif data in ["promo", "draw"]:
+        await callback.message.edit_text("🔥 Акции / 🎁 Розыгрыш — в разработке.")
+        await callback.answer()
+
+    # Назад к старту
+    elif data == "back_to_start":
+        await cmd_start(callback.message)
+        await callback.answer()
+
+    # Обработка оплаты
+    elif data.startswith("pay_"):
         parts = data.split("_")
         if len(parts) != 4:
             await callback.answer("Ошибка данных заказа.", show_alert=True)
             return
-        uc_amount = int(parts[2])
-        price = int(parts[3])
+        uc_amount = int(parts[1])
+        price = int(parts[2])
+        uid_text = parts[3]
 
-        user_awaiting_uid[user_id] = (uc_amount, price)
-        await callback.message.edit_text(
-            "🆔 Пожалуйста, отправьте новый UID PUBG Mobile.\nОн должен начинаться на 5 и состоять только из цифр."
-        )
-        await callback.answer()
-
-    # Отмена заказа
-    elif data == "cancel_order":
-        user_cart.pop(user_id, None)
-        user_awaiting_uid.pop(user_id, None)
-        await callback.message.edit_text(
-            "❌ Заказ отменён.\nВернитесь в магазин и выберите товар заново:",
-            reply_markup=get_uc_amount_keyboard()
-        )
-        await callback.answer()
-
-    # Оплата
-    elif data.startswith("pay_uid_"):
-        parts = data.split("_")
-        if len(parts) != 5:
-            await callback.answer("Ошибка данных заказа.", show_alert=True)
-            return
-        uc_amount = int(parts[2])
-        price = int(parts[3])
-        uid_text = parts[4]
-
-        # Здесь должна быть логика создания платёжной ссылки.
-        # Для примера делаем имитацию: сразу считаем оплату успешной.
-        payment_link = f"https://example.com/pay?amount={price}&uid={uid_text}"  # ЗАМЕНИТЬ на реальную платёжную ссылку
+        payment_link = f"https://example.com/pay?amount={price}&uid={uid_text}"
 
         await callback.message.edit_text(
             f"UC — {uc_amount}\n"
@@ -435,49 +335,74 @@ async def callback_handler(callback: types.CallbackQuery):
         )
         await callback.answer()
 
-    # Поддержка
-    elif data == "support":
-        text = "💬 Опишите вашу ошибку или вопрос.\nПоддержка работает с 9:00 до 23:00 по МСК."
-        await callback.message.edit_text(text, reply_markup=get_support_keyboard())
-        await callback.answer()
-
-    elif data == "support_tg":
+    elif data == "cancel_order":
+        user_cart.pop(user_id, None)
+        user_awaiting_uid.pop(user_id, None)
         await callback.message.edit_text(
-            "✍️ Опишите ошибку или вопрос:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="↩️ Назад", callback_data="support")]
-            ])
-        )
-        await set_support_wait_state(user_id)
-        await callback.answer()
-
-    # Турнир
-    elif data == "tournament":
-        await callback.message.edit_text(
-            "🏆 Ознакомьтесь с правилами проведения турнира.",
-            reply_markup=get_tournament_keyboard()
+            "❌ Заказ отменён.\nВернитесь в магазин и выберите товар заново:",
+            reply_markup=get_uc_amount_keyboard()
         )
         await callback.answer()
 
-    elif data == "tournament_rules":
-        await callback.message.edit_text("📖 Правила турнира: (в разработке)")
-        await callback.answer()
-
-    # Акции и Розыгрыш (заглушки)
-    elif data == "promo":
-        await callback.message.edit_text("🔥 Акции — в разработке.")
-        await callback.answer()
-    elif data == "draw":
-        await callback.message.edit_text("🎁 Розыгрыш — в разработке.")
-        await callback.answer()
-
-    # Кнопка «Назад» к старту
-    elif data == "back_to_start":
-        await cmd_start(callback.message)
+    elif data == "change_uid":
+        if user_id not in user_cart:
+            await callback.answer("Сначала выберите товар.", show_alert=True)
+            return
+        cart = user_cart[user_id]
+        user_awaiting_uid[user_id] = (cart["uc_amount"], cart["price"])
+        await callback.message.edit_text(
+            "🆔 Пожалуйста, отправьте новый UID PUBG Mobile.\nОн должен начинаться на 5 и состоять только из цифр."
+        )
         await callback.answer()
 
     else:
         await callback.answer("Неизвестная команда.", show_alert=True)
+
+# Обработчик обычных сообщений (ввод UID, поддержка)
+@dp.message()
+async def handle_messages(message: types.Message):
+    user_id = message.from_user.id
+
+    # Если пользователь сейчас в режиме «написать в поддержку»
+    if user_id in support_waiting_users:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
+            )
+            await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
+        except Exception as e:
+            await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
+        finally:
+            support_waiting_users.discard(user_id)
+        return
+
+    # Если пользователь ожидает ввода UID
+    if user_id in user_awaiting_uid:
+        uid_text = message.text.strip()
+
+        # Проверка: UID должен состоять только из цифр и начинаться на 5
+        if not uid_text.isdigit() or not uid_text.startswith("5"):
+            await message.answer(
+                "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
+            )
+            return
+
+        uc_amount, price = user_awaiting_uid[user_id]
+        user_awaiting_uid.pop(user_id, None)  # убираем ожидание
+
+        text = (
+            f"UC — {uc_amount}\n"
+            f"Цена — {price} ₽\n"
+            f"UID — {uid_text}"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_{uc_amount}_{price}_{uid_text}")],
+            [InlineKeyboardButton(text="🔄 Другой UID", callback_data="change_uid")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
+        ])
+        await message.answer(text, reply_markup=keyboard)
+        return
 
 
 async def main():
