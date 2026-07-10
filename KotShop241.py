@@ -18,6 +18,9 @@ ADMIN_ID = 7309972832  # ID администратора для пересылк
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Хранилище корзины: user_id -> {"uc_amount": int, "price": int}
+user_cart = {}
+
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
     btn_menu = InlineKeyboardButton(text="Меню", callback_data="menu_main")
@@ -87,14 +90,30 @@ def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+# Кнопки с ценами UC
 def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
-    # Здесь можно добавить реальные кнопки с суммами UC
-    btn_example = InlineKeyboardButton(text="Пример: 60 UC — 150 ₽", callback_data="uc_example")
-    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="pubg_shop")
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [btn_example],
-        [btn_back]
-    ])
+    prices = [
+        ("60 UC — 74 ₽", "uc_select_60"),
+        ("325 UC — 431 ₽", "uc_select_325"),
+        ("660 UC — 860 ₽", "uc_select_660"),
+        ("1800 UC — 1815 ₽", "uc_select_1800"),
+        ("3850 UC — 3632 ₽", "uc_select_3850"),
+        ("8100 UC — 7267 ₽", "uc_select_8100"),
+    ]
+    buttons = [[InlineKeyboardButton(text=text, callback_data=data)] for text, data in prices]
+    buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="pubg_shop")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# Клавиатура подтверждения заказа
+def get_confirm_keyboard(uc_amount: int, price: int) -> InlineKeyboardMarkup:
+    text_confirm = f"UC — {uc_amount}\nЦена — {price} ₽"
+    # В тексте сообщения мы передадим эти данные отдельно, здесь только кнопки
+    buttons = [
+        [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_{uc_amount}_{price}")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="uc_by_id")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons), text_confirm
 
 
 @dp.message(Command("start"))
@@ -160,6 +179,7 @@ async def handle_uc_keywords(message: types.Message):
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
     data = callback.data
+    user_id = callback.from_user.id
 
     # Главное меню
     if data == "menu_main":
@@ -222,18 +242,41 @@ async def callback_handler(callback: types.CallbackQuery):
 
     # UC по ID
     elif data == "uc_by_id":
+        # При переходе в корзину сбрасываем предыдущую корзину для этого пользователя
+        user_cart.pop(user_id, None)
         await callback.message.edit_text(
-            "Выберите нужное количество UC",
+            "Выберите нужное количество UC:",
             reply_markup=get_uc_amount_keyboard()
+        )
+        await callback.answer()
+
+    # Выбор конкретного товара
+    elif data.startswith("uc_select_"):
+        mapping = {
+            "uc_select_60": (60, 74),
+            "uc_select_325": (325, 431),
+            "uc_select_660": (660, 860),
+            "uc_select_1800": (1800, 1815),
+            "uc_select_3850": (3850, 3632),
+            "uc_select_8100": (8100, 7267),
+        }
+        uc_amount, price = mapping.get(data, (0, 0))
+        if uc_amount == 0:
+            await callback.answer("Ошибка выбора товара.", show_alert=True)
+            return
+
+        # Сохраняем в корзину
+        user_cart[user_id] = {"uc_amount": uc_amount, "price": price}
+
+        keyboard, text_confirm = get_confirm_keyboard(uc_amount, price)
+        await callback.message.edit_text(
+            f"🛒 Корзина:\n{text_confirm}\n\nПодтвердите заказ:",
+            reply_markup=keyboard
         )
         await callback.answer()
 
     elif data == "other_items":
         await callback.message.edit_text("🛍️ Другие товары — в разработке.")
-        await callback.answer()
-
-    elif data == "uc_example":
-        await callback.message.edit_text("Пример товара: 60 UC за 150 ₽. Оформление через поддержку или в будущем через корзину.")
         await callback.answer()
 
     # Поддержка
@@ -249,7 +292,7 @@ async def callback_handler(callback: types.CallbackQuery):
                 [InlineKeyboardButton(text="↩️ Назад", callback_data="support")]
             ])
         )
-        await set_support_wait_state(callback.from_user.id)
+        await set_support_wait_state(user_id)
         await callback.answer()
 
     # Турнир
@@ -272,14 +315,41 @@ async def callback_handler(callback: types.CallbackQuery):
         await callback.message.edit_text("🎁 Розыгрыш — в разработке.")
         await callback.answer()
 
-    # Кнопка «Назад»
+    # Кнопка «Назад» к старту
     elif data == "back_to_start":
         await cmd_start(callback.message)
         await callback.answer()
 
-    elif data == "menu_main":
-        # Уже обработано выше, но на всякий случай
-        pass
+    # Оплата
+    elif data.startswith("pay_"):
+        parts = data.split("_")
+        if len(parts) != 3:
+            await callback.answer("Ошибка данных заказа.", show_alert=True)
+            return
+        uc_amount = int(parts[1])
+        price = int(parts[2])
+
+        # Здесь должна быть логика создания платёжной ссылки.
+        # Для примера делаем имитацию: сразу считаем оплату успешной.
+        payment_link = f"https://example.com/pay?amount={price}"  # ЗАМЕНИТЬ на реальную платёжную ссылку
+
+        await callback.message.edit_text(
+            f"UC — {uc_amount}\nЦена — {price} ₽\n\nНажмите кнопку ниже, чтобы перейти к оплате:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_link)],
+                [InlineKeyboardButton(text="↩️ Назад", callback_data="uc_by_id")]
+            ])
+        )
+        await callback.answer()
+
+    # Обработка «Назад» из подтверждения (возврат к выбору UC)
+    elif data == "uc_by_id":
+        user_cart.pop(user_id, None)
+        await callback.message.edit_text(
+            "Выберите нужное количество UC:",
+            reply_markup=get_uc_amount_keyboard()
+        )
+        await callback.answer()
 
 
 # Простой механизм ожидания сообщения для поддержки (без полноценного FSM)
@@ -291,8 +361,6 @@ async def set_support_wait_state(user_id: int):
 
 @dp.message()
 async def handle_messages(message: types.Message):
-    user_id = message.from_user.id
-
     # Если пользователь сейчас в режиме «написать в поддержку»
     if user_id in support_waiting_users:
         try:
