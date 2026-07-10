@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 from datetime import datetime
-from typing import Optional, Dict, Any
+    from typing import Optional, Dict, Any, List
 
 import aiohttp
 import sqlite3
@@ -29,88 +29,83 @@ ADMIN_ID = 7309972832
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- База данных (SQLite) ---
 DB_PATH = "payments.db"
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id TEXT PRIMARY KEY,
-            user_id INTEGER,
-            uc_amount INTEGER,
-            price_rub INTEGER,
-            uid TEXT,
-            status TEXT DEFAULT 'pending',
-            delivered INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id TEXT PRIMARY KEY,
+                user_id INTEGER,
+                uc_amount INTEGER,
+                price_rub INTEGER,
+                uid TEXT,
+                status TEXT DEFAULT 'pending',
+                delivered INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
 
 
 init_db()
 
 
 def save_order(order_id: str, user_id: int, uc_amount: int, price: int, uid: str):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute(
-            """
-            INSERT INTO orders (order_id, user_id, uc_amount, price_rub, uid, status, delivered)
-            VALUES (?, ?, ?, ?, ?, ?, 0)
-            ON CONFLICT(order_id) DO NOTHING
-            """,
-            (order_id, user_id, uc_amount, price, uid, "pending")
-        )
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        try:
+            c.execute(
+                """
+                INSERT INTO orders (order_id, user_id, uc_amount, price_rub, uid, status, delivered)
+                VALUES (?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT(order_id) DO NOTHING
+                """,
+                (order_id, user_id, uc_amount, price, uid, "pending")
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"Ошибка сохранения заказа: {e}")
 
 
 def update_order_status(order_id: str, status: str):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
+        conn.commit()
 
 
 def mark_delivered(order_id: str):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE orders SET delivered = 1 WHERE order_id = ?", (order_id,))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("UPDATE orders SET delivered = 1 WHERE order_id = ?", (order_id,))
+        conn.commit()
 
 
-def get_pending_paid_orders():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM orders WHERE status = 'PAID' AND delivered = 0")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+def get_pending_paid_orders() -> List[sqlite3.Row]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT * FROM orders WHERE status = 'PAID' AND delivered = 0")
+        return c.fetchall()
 
 
-# Хранилища (в памяти, для сессии)
 user_cart: Dict[int, Dict[str, int]] = {}
 user_awaiting_uid: Dict[int, tuple] = {}
 support_waiting_users = set()
 
 
-# --- Т‑Банк API ---
-
 def sign_payload(payload: dict) -> str:
-    sorted_keys = sorted(payload.keys())
-    sign_str = "".join(f"{k}={payload[k]}" for k in sorted_keys)
+    """
+    Подписываем payload согласно T‑API: сортируем ключи, склеиваем "key=value", считаем HMAC‑SHA256.
+    Важно: в T‑API не должно быть пустых значений, и порядок ключей важен.
+    """
+    # Убираем None и пустые строки
+    filtered = {k: v for k, v in payload.items() if v is not None and v != ""}
+    sorted_keys = sorted(filtered.keys())
+    sign_str = "".join(f"{k}={filtered[k]}" for k in sorted_keys)
     sign = hmac.new(
         TERMINAL_SECRET.encode("utf-8"),
         sign_str.encode("utf-8"),
@@ -126,7 +121,10 @@ async def create_tinkoff_payment(order_id: str, amount_rub: int, description: st
         "Amount": amount_rub * 100,  # копейки
         "OrderId": order_id,
         "Description": description,
+        "SuccessURL": None,  # не обязателен, если используем PaymentURL
+        "FailURL": None
     }
+
     token = sign_payload(payload)
     payload["Token"] = token
 
@@ -135,15 +133,12 @@ async def create_tinkoff_payment(order_id: str, amount_rub: int, description: st
             async with session.post(url, json=payload) as resp:
                 data = await resp.json()
                 return data
-        except Exception:
+        except Exception as e:
+            print(f"Ошибка при создании платежа: {e}")
             return None
 
 
 async def check_tinkoff_payment_status(order_id: str) -> Optional[str]:
-    """
-    Проверяет статус платежа через метод GetState.
-    Возвращает статус (CONFIRMED, REJECTED, WAITING и т.д.) или None при ошибке.
-    """
     url = "https://securepay.tinkoff.ru/v2/GetState"
     payload = {
         "TerminalKey": TERMINAL_KEY,
@@ -157,17 +152,18 @@ async def check_tinkoff_payment_status(order_id: str) -> Optional[str]:
         try:
             async with session.post(url, json=payload) as resp:
                 data = await resp.json()
-                if data.get("Success"):
+                if data.get("Success") is True:
                     return data.get("Status")
                 else:
-                    print(f"Ошибка проверки статуса: {data}")
+                    error_code = data.get("ErrorCode")
+                    print(f"GetState ошибка: {error_code} — {data.get('Message')}")
                     return None
         except Exception as e:
             print(f"Network error при проверке статуса: {e}")
             return None
 
 
-# --- Клавиатуры ---
+# --- Клавиатуры (без изменений, кроме форматирования) ---
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -264,7 +260,7 @@ def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# --- Хендлеры бота ---
+# --- Хендлеры (исправленные) ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -469,18 +465,22 @@ async def callback_handler(callback: types.CallbackQuery):
 
         payment_result = await create_tinkoff_payment(order_id, price, f"UC для PUBG Mobile, UID: {uid_text}")
 
-        if not payment_result or payment_result.get("ErrorCode"):
+        if not payment_result:
             await callback.message.edit_text(
-                "⚠️ Ошибка при создании платежа. Попробуйте позже или обратитесь в поддержку."
-            )
+                "⚠️ Ошибка при создании платежа. Попробуйте позже или обратитесь в поддержку.")
+            await callback.answer()
+            return
+
+        error_code = payment_result.get("ErrorCode")
+        if error_code:
+            msg = payment_result.get("Message", "Неизвестная ошибка банка.")
+            await callback.message.edit_text(f"⚠️ Ошибка банка: {error_code} — {msg}")
             await callback.answer()
             return
 
         payment_url = payment_result.get("PaymentURL")
         if not payment_url:
-            await callback.message.edit_text(
-                "⚠️ Не удалось получить ссылку на оплату. Обратитесь в поддержку."
-            )
+            await callback.message.edit_text("⚠️ Не удалось получить ссылку на оплату. Обратитесь в поддержку.")
             await callback.answer()
             return
 
@@ -505,29 +505,38 @@ async def callback_handler(callback: types.CallbackQuery):
 
         status = await check_tinkoff_payment_status(order_id)
 
-        if not status:
-            await callback.message.answer(
-                "⚠️ Не удалось получить статус от банка. Попробуйте позже."
-            )
+        if status is None:
+            await callback.message.answer("⚠️ Не удалось получить статус от банка. Попробуйте позже.")
             await callback.answer()
             return
 
+        # Защита от повторной выдачи: если уже delivered, не выдаём снова
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT delivered FROM orders WHERE order_id = ?", (order_id,))
+        row = c.fetchone()
+        conn.close()
+
+        delivered = row[0] if row else 0
+
         if status == "CONFIRMED":
-            # Оплата прошла
             update_order_status(order_id, "PAID")
-
-            await callback.message.answer(
-                "✅ Оплата подтверждена!\n\nВаш заказ принят в обработку. Менеджер свяжется с вами в ближайшее время для начисления UC."
-            )
-
-            # Уведомление админу
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"💰 Новый оплаченный заказ!\nOrderID: {order_id}\nСтатус: CONFIRMED"
+            if delivered == 0:
+                await callback.message.answer(
+                    f"✅ Оплата подтверждена!\n\nВаш заказ принят в обработку. Менеджер свяжется с вами в ближайшее время для начисления UC."
                 )
-            except Exception:
-                pass
+                mark_delivered(order_id)
+
+                # Уведомление админу
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"💰 Новый оплаченный заказ!\nOrderID: {order_id}\nСтатус: CONFIRMED"
+                    )
+                except Exception:
+                    pass
+            else:
+                await callback.message.answer("✅ Оплата подтверждена. Заказ уже в обработке.")
 
         elif status == "REJECTED":
             update_order_status(order_id, "REJECTED")
@@ -604,9 +613,8 @@ async def callback_handler(callback: types.CallbackQuery):
 
     async def check_and_deliver_orders():
         """
-        Периодически проверяем заказы со статусом 'PAID' и флагом delivered = 0.
-        В реальном проекте лучше использовать отдельный сервис для вебхуков,
-        а здесь делаем простую фоновую проверку.
+        Фоновая задача: периодически проверяем заказы со статусом 'PAID' и delivered = 0.
+        В реальном проекте лучше использовать вебхуки, но это хороший запасной вариант.
         """
         while True:
             rows = get_pending_paid_orders()
@@ -627,16 +635,16 @@ async def callback_handler(callback: types.CallbackQuery):
                         )
                     )
                     mark_delivered(order_id)
-                except Exception:
-                    # Пользователь мог заблокировать бота — просто пропускаем
-                    pass
+                except Exception as e:
+                    # Пользователь мог заблокировать бота — просто логируем и пропускаем
+                    print(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
 
             await asyncio.sleep(30)
 
     async def main():
+        # Запускаем фоновую проверку заказов
         asyncio.create_task(check_and_deliver_orders())
         await dp.start_polling(bot)
 
     if __name__ == "__main__":
         asyncio.run(main())
-
