@@ -32,6 +32,7 @@ dp = Dispatcher()
 # --- База данных (SQLite) ---
 DB_PATH = "payments.db"
 
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -50,7 +51,9 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
+
 
 def save_order(order_id: str, user_id: int, uc_amount: int, price: int, uid: str):
     conn = sqlite3.connect(DB_PATH)
@@ -70,6 +73,7 @@ def save_order(order_id: str, user_id: int, uc_amount: int, price: int, uid: str
     finally:
         conn.close()
 
+
 def update_order_status(order_id: str, status: str):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -77,12 +81,14 @@ def update_order_status(order_id: str, status: str):
     conn.commit()
     conn.close()
 
+
 def mark_delivered(order_id: str):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE orders SET delivered = 1 WHERE order_id = ?", (order_id,))
     conn.commit()
     conn.close()
+
 
 def get_pending_paid_orders():
     conn = sqlite3.connect(DB_PATH)
@@ -93,10 +99,12 @@ def get_pending_paid_orders():
     conn.close()
     return rows
 
+
 # Хранилища (в памяти, для сессии)
 user_cart: Dict[int, Dict[str, int]] = {}
 user_awaiting_uid: Dict[int, tuple] = {}
 support_waiting_users = set()
+
 
 # --- Т‑Банк API ---
 
@@ -109,6 +117,7 @@ def sign_payload(payload: dict) -> str:
         hashlib.sha256
     ).hexdigest()
     return sign
+
 
 async def create_tinkoff_payment(order_id: str, amount_rub: int, description: str) -> Optional[dict]:
     url = "https://securepay.tinkoff.ru/v2/Init"
@@ -129,6 +138,35 @@ async def create_tinkoff_payment(order_id: str, amount_rub: int, description: st
         except Exception:
             return None
 
+
+async def check_tinkoff_payment_status(order_id: str) -> Optional[str]:
+    """
+    Проверяет статус платежа через метод GetState.
+    Возвращает статус (CONFIRMED, REJECTED, WAITING и т.д.) или None при ошибке.
+    """
+    url = "https://securepay.tinkoff.ru/v2/GetState"
+    payload = {
+        "TerminalKey": TERMINAL_KEY,
+        "OrderId": order_id
+    }
+
+    token = sign_payload(payload)
+    payload["Token"] = token
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload) as resp:
+                data = await resp.json()
+                if data.get("Success"):
+                    return data.get("Status")
+                else:
+                    print(f"Ошибка проверки статуса: {data}")
+                    return None
+        except Exception as e:
+            print(f"Network error при проверке статуса: {e}")
+            return None
+
+
 # --- Клавиатуры ---
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
@@ -136,6 +174,7 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Меню", callback_data="menu_main")],
         [InlineKeyboardButton(text="Документация магазина", callback_data="docs")]
     ])
+
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -149,12 +188,14 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_start")]
     ])
 
+
 def get_shop_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎮 PUBG Mobile", callback_data="pubg_shop")],
         [InlineKeyboardButton(text="🖥️ Steam РФ", callback_data="steam_shop")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
+
 
 def get_support_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -163,11 +204,13 @@ def get_support_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
 
+
 def get_tournament_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Правила проведения турнира", callback_data="tournament_rules")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
+
 
 def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -175,6 +218,7 @@ def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🛍️ Другие товары", callback_data="other_items")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="shop")]
     ])
+
 
 UC_PRICES = [
     ("60 UC — 74 ₽", "uc_select_60"),
@@ -205,6 +249,7 @@ UC_PRICES = [
     ("81000 UC — 71299 ₽", "uc_select_81000"),
 ]
 
+
 def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     row = []
@@ -218,6 +263,7 @@ def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="pubg_shop")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
 # --- Хендлеры бота ---
 
 @dp.message(Command("start"))
@@ -229,9 +275,11 @@ async def cmd_start(message: types.Message):
     )
     await message.answer(text=text, reply_markup=get_start_keyboard())
 
+
 @dp.message(F.text.lower().in_(["меню"]))
 async def handle_menu_keyword(message: types.Message):
     await message.answer("📋 Главное меню KotShop241:\nВыберите нужный раздел:", reply_markup=get_main_menu_keyboard())
+
 
 @dp.message(F.text.lower().in_(
     ["магазин", "поддержка", "ошибка", "нужна помощь", "турнир", "акции", "акция", "розыгрыш"]
@@ -252,13 +300,16 @@ async def handle_keywords(message: types.Message):
     elif t == "розыгрыш":
         await message.answer("🎁 Раздел «Розыгрыш» — в разработке.", reply_markup=get_main_menu_keyboard())
 
+
 @dp.message(F.text.lower().in_(["pubg", "пабг", "купить uc", "купить юси"]))
 async def handle_pubg_keywords(message: types.Message):
     await message.answer("Выберите интересующий раздел:", reply_markup=get_pubg_main_keyboard())
 
+
 @dp.message(F.text.lower().in_(["юси", "uc"]))
 async def handle_uc_keywords(message: types.Message):
     await message.answer("Выберите нужное количество UC", reply_markup=get_uc_amount_keyboard())
+
 
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
@@ -304,7 +355,7 @@ async def callback_handler(callback: types.CallbackQuery):
         user_cart.pop(user_id, None)
         user_awaiting_uid.pop(user_id, None)
         await callback.message.edit_text(
-            "Выберите нужное количество UC:",
+            "Выберите нужное количество UC",
             reply_markup=get_uc_amount_keyboard()
         )
         await callback.answer()
@@ -315,7 +366,7 @@ async def callback_handler(callback: types.CallbackQuery):
 
     elif data.startswith("uc_select_"):
         mapping = {
-                        "uc_select_60": (60, 74),
+            "uc_select_60": (60, 74),
             "uc_select_120": (120, 145),
             "uc_select_180": (180, 221),
             "uc_select_240": (240, 294),
@@ -437,12 +488,54 @@ async def callback_handler(callback: types.CallbackQuery):
             f"UC — {uc_amount}\n"
             f"Цена — {price} ₽\n"
             f"UID — {uid_text}\n\n"
-            "Нажмите кнопку ниже, чтобы перейти к оплате:",
+            "Нажмите кнопку ниже, чтобы перейти к оплате.\n"
+            "После оплаты нажмите «Проверить статус оплаты», чтобы получить подтверждение:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)],
+                [InlineKeyboardButton(text="✅ Проверить статус оплаты", callback_data=f"check_{order_id}")],
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
             ])
         )
+        await callback.answer()
+
+    elif data.startswith("check_"):
+        order_id = data.split("_")[1]
+
+        await callback.message.answer("⏳ Проверяю статус платежа в Т‑Банке...")
+
+        status = await check_tinkoff_payment_status(order_id)
+
+        if not status:
+            await callback.message.answer(
+                "⚠️ Не удалось получить статус от банка. Попробуйте позже."
+            )
+            await callback.answer()
+            return
+
+        if status == "CONFIRMED":
+            # Оплата прошла
+            update_order_status(order_id, "PAID")
+
+            await callback.message.answer(
+                "✅ Оплата подтверждена!\n\nВаш заказ принят в обработку. Менеджер свяжется с вами в ближайшее время для начисления UC."
+            )
+
+            # Уведомление админу
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"💰 Новый оплаченный заказ!\nOrderID: {order_id}\nСтатус: CONFIRMED"
+                )
+            except Exception:
+                pass
+
+        elif status == "REJECTED":
+            update_order_status(order_id, "REJECTED")
+            await callback.message.answer("❌ Оплата отклонена банком.")
+
+        else:
+            await callback.message.answer(f"ℹ️ Текущий статус: {status}. Оплата ещё не завершена.")
+
         await callback.answer()
 
     elif data == "cancel_order":
@@ -467,87 +560,83 @@ async def callback_handler(callback: types.CallbackQuery):
     else:
         await callback.answer("Неизвестная команда.", show_alert=True)
 
+    @dp.message()
+    async def handle_messages(message: types.Message):
+        user_id = message.from_user.id
 
-@dp.message()
-async def handle_messages(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id in support_waiting_users:
-        try:
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
-            )
-            await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
-        except Exception as e:
-            await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
-        finally:
-            support_waiting_users.discard(user_id)
-        return
-
-    if user_id in user_awaiting_uid:
-        uid_text = message.text.strip()
-
-        if not uid_text.isdigit() or not uid_text.startswith("5"):
-            await message.answer(
-                "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
-            )
-            return
-
-        uc_amount, price = user_awaiting_uid[user_id]
-        user_awaiting_uid.pop(user_id, None)
-
-        text = (
-            f"UC — {uc_amount}\n"
-            f"Цена — {price} ₽\n"
-            f"UID — {uid_text}"
-        )
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_{uc_amount}_{price}_{uid_text}")],
-            [InlineKeyboardButton(text="🔄 Другой UID", callback_data="change_uid")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
-        ])
-        await message.answer(text, reply_markup=keyboard)
-        return
-
-
-async def check_and_deliver_orders():
-    """
-    Периодически проверяем заказы со статусом 'PAID' и флагом delivered = 0.
-    В реальном проекте лучше использовать отдельный сервис для вебхуков,
-    а здесь делаем простую фоновую проверку.
-    """
-    while True:
-        rows = get_pending_paid_orders()
-        for row in rows:
-            order_id = row["order_id"]
-            user_id = row["user_id"]
-            uc_amount = row["uc_amount"]
-            uid = row["uid"]
-
+        if user_id in support_waiting_users:
             try:
                 await bot.send_message(
-                    chat_id=user_id,
-                    text=(
-                        f"✅ Оплата подтверждена!\n\n"
-                        f"Заказ: {uc_amount} UC\n"
-                        f"UID: {uid}\n\n"
-                        "Ваш заказ обрабатывается. Ожидайте начисления UC в ближайшее время."
-                    )
+                    chat_id=ADMIN_ID,
+                    text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
                 )
-                mark_delivered(order_id)
-            except Exception:
-                # Пользователь мог заблокировать бота — просто пропускаем
-                pass
+                await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
+            except Exception as e:
+                await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
+            finally:
+                support_waiting_users.discard(user_id)
+            return
 
-        await asyncio.sleep(30)
+        if user_id in user_awaiting_uid:
+            uid_text = message.text.strip()
 
+            if not uid_text.isdigit() or not uid_text.startswith("5"):
+                await message.answer(
+                    "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
+                )
+                return
 
-async def main():
-    asyncio.create_task(check_and_deliver_orders())
-    await dp.start_polling(bot)
+            uc_amount, price = user_awaiting_uid[user_id]
+            user_awaiting_uid.pop(user_id, None)
 
+            text = (
+                f"UC — {uc_amount}\n"
+                f"Цена — {price} ₽\n"
+                f"UID — {uid_text}"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_{uc_amount}_{price}_{uid_text}")],
+                [InlineKeyboardButton(text="🔄 Другой UID", callback_data="change_uid")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
+            ])
+            await message.answer(text, reply_markup=keyboard)
+            return
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    async def check_and_deliver_orders():
+        """
+        Периодически проверяем заказы со статусом 'PAID' и флагом delivered = 0.
+        В реальном проекте лучше использовать отдельный сервис для вебхуков,
+        а здесь делаем простую фоновую проверку.
+        """
+        while True:
+            rows = get_pending_paid_orders()
+            for row in rows:
+                order_id = row["order_id"]
+                user_id = row["user_id"]
+                uc_amount = row["uc_amount"]
+                uid = row["uid"]
+
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=(
+                            f"✅ Оплата подтверждена!\n\n"
+                            f"Заказ: {uc_amount} UC\n"
+                            f"UID: {uid}\n\n"
+                            "Ваш заказ обрабатывается. Ожидайте начисления UC в ближайшее время."
+                        )
+                    )
+                    mark_delivered(order_id)
+                except Exception:
+                    # Пользователь мог заблокировать бота — просто пропускаем
+                    pass
+
+            await asyncio.sleep(30)
+
+    async def main():
+        asyncio.create_task(check_and_deliver_orders())
+        await dp.start_polling(bot)
+
+    if __name__ == "__main__":
+        asyncio.run(main())
 
