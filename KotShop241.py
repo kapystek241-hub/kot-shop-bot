@@ -21,6 +21,9 @@ dp = Dispatcher()
 # Хранилище корзины: user_id -> {"uc_amount": int, "price": int}
 user_cart = {}
 
+# Хранилище ожидания UID: user_id -> uc_amount, price
+user_awaiting_uid = {}
+
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
     btn_menu = InlineKeyboardButton(text="Меню", callback_data="menu_main")
@@ -90,30 +93,49 @@ def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-# Кнопки с ценами UC
+# Кнопки с ценами UC (полный список из ТЗ)
 def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
     prices = [
         ("60 UC — 74 ₽", "uc_select_60"),
+        ("120 UC — 145 ₽", "uc_select_120"),
+        ("180 UC — 221 ₽", "uc_select_180"),
+        ("240 UC — 294 ₽", "uc_select_240"),
         ("325 UC — 431 ₽", "uc_select_325"),
-        ("660 UC — 860 ₽", "uc_select_660"),
-        ("1800 UC — 1815 ₽", "uc_select_1800"),
+        ("385 UC — 442 ₽", "uc_select_385"),
+        ("445 UC — 516 ₽", "uc_select_445"),
+        ("660 UC — 749 ₽", "uc_select_660"),
+        ("720 UC — 824 ₽", "uc_select_720"),
+        ("985 UC — 1089 ₽", "uc_select_985"),
+        ("1320 UC — 1489 ₽", "uc_select_1320"),
+        ("1800 UC — 1799 ₽", "uc_select_1800"),
+        ("1920 UC — 1989 ₽", "uc_select_1920"),
+        ("2125 UC — 2179 ₽", "uc_select_2125"),
+        ("2460 UC — 2587 ₽", "uc_select_2460"),
         ("3850 UC — 3632 ₽", "uc_select_3850"),
+        ("4510 UC — 4372 ₽", "uc_select_4510"),
+        ("5650 UC — 5452 ₽", "uc_select_5650"),
         ("8100 UC — 7267 ₽", "uc_select_8100"),
+        ("9900 UC — 8989 ₽", "uc_select_9900"),
+        ("11950 UC — 10914 ₽", "uc_select_11950"),
+        ("16200 UC — 14568 ₽", "uc_select_16200"),
+        ("24300 UC — 21852 ₽", "uc_select_24300"),
+        ("32400 UC — 28753 ₽", "uc_select_32400"),
+        ("40500 UC — 35955 ₽", "uc_select_40500"),
+        ("81000 UC — 71299 ₽", "uc_select_81000"),
     ]
-    buttons = [[InlineKeyboardButton(text=text, callback_data=data)] for text, data in prices]
+    # Разбиваем на строки по 3 кнопки (примерно)
+    buttons = []
+    row = []
+    for text, data in prices:
+        row.append(InlineKeyboardButton(text=text, callback_data=data))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
     buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="pubg_shop")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-# Клавиатура подтверждения заказа
-def get_confirm_keyboard(uc_amount: int, price: int) -> InlineKeyboardMarkup:
-    text_confirm = f"UC — {uc_amount}\nЦена — {price} ₽"
-    # В тексте сообщения мы передадим эти данные отдельно, здесь только кнопки
-    buttons = [
-        [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_{uc_amount}_{price}")],
-        [InlineKeyboardButton(text="↩️ Назад", callback_data="uc_by_id")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons), text_confirm
 
 
 @dp.message(Command("start"))
@@ -173,6 +195,58 @@ async def handle_uc_keywords(message: types.Message):
         "Выберите нужное количество UC",
         reply_markup=get_uc_amount_keyboard()
     )
+
+
+# Простой механизм ожидания сообщения для поддержки (без полноценного FSM)
+support_waiting_users = set()
+
+async def set_support_wait_state(user_id: int):
+    support_waiting_users.add(user_id)
+
+
+@dp.message()
+async def handle_messages(message: types.Message):
+    user_id = message.from_user.id
+
+    # Если пользователь сейчас в режиме «написать в поддержку»
+    if user_id in support_waiting_users:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
+            )
+            await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
+        except Exception as e:
+            await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
+        finally:
+            support_waiting_users.discard(user_id)
+        return
+
+    # Если пользователь ожидает ввода UID
+    if user_id in user_awaiting_uid:
+        uid_text = message.text.strip()
+        # Проверка: UID должен начинаться на 5 и быть цифрами
+        if not uid_text.isdigit() or not uid_text.startswith("5"):
+            await message.answer(
+                "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
+            )
+            return
+
+        uc_amount, price = user_awaiting_uid[user_id]
+        user_awaiting_uid.pop(user_id, None)  # убираем ожидание
+
+        text = (
+            f"UC — {uc_amount}\n"
+            f"Цена — {price} ₽\n"
+            f"UID — {uid_text}"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_uid_{uc_amount}_{price}_{uid_text}")],
+            [InlineKeyboardButton(text="🔄 Другой UID", callback_data=f"change_uid_{uc_amount}_{price}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
+        ])
+        await message.answer(text, reply_markup=keyboard)
+        return
 
 
 # Основной обработчик callback-запросов
@@ -242,8 +316,8 @@ async def callback_handler(callback: types.CallbackQuery):
 
     # UC по ID
     elif data == "uc_by_id":
-        # При переходе в корзину сбрасываем предыдущую корзину для этого пользователя
         user_cart.pop(user_id, None)
+        user_awaiting_uid.pop(user_id, None)
         await callback.message.edit_text(
             "Выберите нужное количество UC:",
             reply_markup=get_uc_amount_keyboard()
@@ -254,11 +328,31 @@ async def callback_handler(callback: types.CallbackQuery):
     elif data.startswith("uc_select_"):
         mapping = {
             "uc_select_60": (60, 74),
+            "uc_select_120": (120, 145),
+            "uc_select_180": (180, 221),
+            "uc_select_240": (240, 294            ),
             "uc_select_325": (325, 431),
-            "uc_select_660": (660, 860),
-            "uc_select_1800": (1800, 1815),
+            "uc_select_385": (385, 442),
+            "uc_select_445": (445, 516),
+            "uc_select_660": (660, 749),
+            "uc_select_720": (720, 824),
+            "uc_select_985": (985, 1089),
+            "uc_select_1320": (1320, 1489),
+            "uc_select_1800": (1800, 1799),
+            "uc_select_1920": (1920, 1989),
+            "uc_select_2125": (2125, 2179),
+            "uc_select_2460": (2460, 2587),
             "uc_select_3850": (3850, 3632),
+            "uc_select_4510": (4510, 4372),
+            "uc_select_5650": (5650, 5452),
             "uc_select_8100": (8100, 7267),
+            "uc_select_9900": (9900, 8989),
+            "uc_select_11950": (11950, 10914),
+            "uc_select_16200": (16200, 14568),
+            "uc_select_24300": (24300, 21852),
+            "uc_select_32400": (32400, 28753),
+            "uc_select_40500": (40500, 35955),
+            "uc_select_81000": (81000, 71299),
         }
         uc_amount, price = mapping.get(data, (0, 0))
         if uc_amount == 0:
@@ -268,15 +362,77 @@ async def callback_handler(callback: types.CallbackQuery):
         # Сохраняем в корзину
         user_cart[user_id] = {"uc_amount": uc_amount, "price": price}
 
-        keyboard, text_confirm = get_confirm_keyboard(uc_amount, price)
         await callback.message.edit_text(
-            f"🛒 Корзина:\n{text_confirm}\n\nПодтвердите заказ:",
-            reply_markup=keyboard
+            f"🛒 Корзина:\nUC — {uc_amount}\nЦена — {price} ₽\n\nНажмите «Продолжить», чтобы указать UID PUBG Mobile:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="▶️ Продолжить", callback_data="confirm_uid")],
+                [InlineKeyboardButton(text="↩️ Назад", callback_data="uc_by_id")]
+            ])
         )
         await callback.answer()
 
-    elif data == "other_items":
-        await callback.message.edit_text("🛍️ Другие товары — в разработке.")
+    # Подтверждение: просим ввести UID
+    elif data == "confirm_uid":
+        if user_id not in user_cart:
+            await callback.answer("Сначала выберите товар.", show_alert=True)
+            return
+        cart = user_cart[user_id]
+        # Запоминаем, что пользователь сейчас должен прислать UID для этого заказа
+        user_awaiting_uid[user_id] = (cart["uc_amount"], cart["price"])
+        await callback.message.edit_text(
+            "🆔 Укажите UID PUBG Mobile.\nОн должен состоять только из цифр и начинаться на 5."
+        )
+        await callback.answer()
+
+    # Кнопка «Другой UID» — сброс ожидания и повторный запрос UID
+    elif data.startswith("change_uid_"):
+        parts = data.split("_")
+        if len(parts) != 4:
+            await callback.answer("Ошибка данных заказа.", show_alert=True)
+            return
+        uc_amount = int(parts[2])
+        price = int(parts[3])
+
+        user_awaiting_uid[user_id] = (uc_amount, price)
+        await callback.message.edit_text(
+            "🆔 Пожалуйста, отправьте новый UID PUBG Mobile.\nОн должен начинаться на 5 и состоять только из цифр."
+        )
+        await callback.answer()
+
+    # Отмена заказа
+    elif data == "cancel_order":
+        user_cart.pop(user_id, None)
+        user_awaiting_uid.pop(user_id, None)
+        await callback.message.edit_text(
+            "❌ Заказ отменён.\nВернитесь в магазин и выберите товар заново:",
+            reply_markup=get_uc_amount_keyboard()
+        )
+        await callback.answer()
+
+    # Оплата
+    elif data.startswith("pay_uid_"):
+        parts = data.split("_")
+        if len(parts) != 5:
+            await callback.answer("Ошибка данных заказа.", show_alert=True)
+            return
+        uc_amount = int(parts[2])
+        price = int(parts[3])
+        uid_text = parts[4]
+
+        # Здесь должна быть логика создания платёжной ссылки.
+        # Для примера делаем имитацию: сразу считаем оплату успешной.
+        payment_link = f"https://example.com/pay?amount={price}&uid={uid_text}"  # ЗАМЕНИТЬ на реальную платёжную ссылку
+
+        await callback.message.edit_text(
+            f"UC — {uc_amount}\n"
+            f"Цена — {price} ₽\n"
+            f"UID — {uid_text}\n\n"
+            "Нажмите кнопку ниже, чтобы перейти к оплате:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_link)],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
+            ])
+        )
         await callback.answer()
 
     # Поддержка
@@ -320,60 +476,8 @@ async def callback_handler(callback: types.CallbackQuery):
         await cmd_start(callback.message)
         await callback.answer()
 
-    # Оплата
-    elif data.startswith("pay_"):
-        parts = data.split("_")
-        if len(parts) != 3:
-            await callback.answer("Ошибка данных заказа.", show_alert=True)
-            return
-        uc_amount = int(parts[1])
-        price = int(parts[2])
-
-        # Здесь должна быть логика создания платёжной ссылки.
-        # Для примера делаем имитацию: сразу считаем оплату успешной.
-        payment_link = f"https://example.com/pay?amount={price}"  # ЗАМЕНИТЬ на реальную платёжную ссылку
-
-        await callback.message.edit_text(
-            f"UC — {uc_amount}\nЦена — {price} ₽\n\nНажмите кнопку ниже, чтобы перейти к оплате:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_link)],
-                [InlineKeyboardButton(text="↩️ Назад", callback_data="uc_by_id")]
-            ])
-        )
-        await callback.answer()
-
-    # Обработка «Назад» из подтверждения (возврат к выбору UC)
-    elif data == "uc_by_id":
-        user_cart.pop(user_id, None)
-        await callback.message.edit_text(
-            "Выберите нужное количество UC:",
-            reply_markup=get_uc_amount_keyboard()
-        )
-        await callback.answer()
-
-
-# Простой механизм ожидания сообщения для поддержки (без полноценного FSM)
-support_waiting_users = set()
-
-async def set_support_wait_state(user_id: int):
-    support_waiting_users.add(user_id)
-
-
-@dp.message()
-async def handle_messages(message: types.Message):
-    # Если пользователь сейчас в режиме «написать в поддержку»
-    if user_id in support_waiting_users:
-        try:
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
-            )
-            await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
-        except Exception as e:
-            await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
-        finally:
-            support_waiting_users.discard(user_id)
-        return
+    else:
+        await callback.answer("Неизвестная команда.", show_alert=True)
 
 
 async def main():
@@ -382,3 +486,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
