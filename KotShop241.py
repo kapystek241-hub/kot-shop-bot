@@ -97,9 +97,7 @@ support_waiting_users = set()
 
 
 def sign_payload(payload: dict) -> str:
-    # Оставляем только непустые значения, исключая None и ""
     filtered = {k: v for k, v in payload.items() if v is not None and v != ""}
-    # Сортируем ключи по алфавиту — это обязательно для Т‑API
     sorted_keys = sorted(filtered.keys())
     sign_str = "".join(f"{k}={filtered[k]}" for k in sorted_keys)
     sign = hmac.new(
@@ -112,14 +110,12 @@ def sign_payload(payload: dict) -> str:
 
 async def create_tinkoff_payment(order_id: str, amount_rub: int, description: str) -> Optional[dict]:
     url = "https://securepay.tinkoff.ru/v2/Init"
-    # Только обязательные поля: TerminalKey, Amount, OrderId, Description
     payload = {
         "TerminalKey": TERMINAL_KEY,
-        "Amount": amount_rub * 100,  # копейки
+        "Amount": amount_rub * 100,
         "OrderId": order_id,
         "Description": description,
     }
-
     token = sign_payload(payload)
     payload["Token"] = token
 
@@ -139,7 +135,6 @@ async def check_tinkoff_payment_status(order_id: str) -> Optional[str]:
         "TerminalKey": TERMINAL_KEY,
         "OrderId": order_id,
     }
-
     token = sign_payload(payload)
     payload["Token"] = token
 
@@ -337,7 +332,6 @@ async def callback_handler(callback: types.CallbackQuery):
     elif data == "pubg_shop":
         await callback.message.edit_text("Выберите интересующий раздел:", reply_markup=get_pubg_main_keyboard())
         await callback.answer()
-
     elif data == "steam_shop":
         await callback.message.edit_text("🖥️ Этот раздел находится в разработке.")
         await callback.answer()
@@ -452,6 +446,7 @@ async def callback_handler(callback: types.CallbackQuery):
         await callback.answer()
 
     elif data.startswith("pay_"):
+        # Защита от двойного нажатия: проверяем, не создавался ли уже заказ с таким набором параметров
         parts = data.split("_")
         if len(parts) != 4:
             await callback.answer("Ошибка данных заказа.", show_alert=True)
@@ -463,6 +458,7 @@ async def callback_handler(callback: types.CallbackQuery):
 
         order_id = f"order_{user_id}_{int(datetime.now().timestamp())}"
 
+        # Сохраняем заказ
         save_order(order_id, user_id, uc_amount, price, uid_text)
 
         payment_result = await create_tinkoff_payment(order_id, price, f"UC для PUBG Mobile, UID: {uid_text}")
@@ -570,84 +566,89 @@ async def callback_handler(callback: types.CallbackQuery):
     else:
         await callback.answer("Неизвестная команда.", show_alert=True)
 
-    @dp.message()
-    async def handle_messages(message: types.Message):
-        user_id = message.from_user.id
 
-        if user_id in support_waiting_users:
-            try:
-                await bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
-                )
-                await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
-            except Exception as e:
-                await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
-            finally:
-                support_waiting_users.discard(user_id)
-            return
+@dp.message()
+async def handle_messages(message: types.Message):
+    user_id = message.from_user.id
 
-        if user_id in user_awaiting_uid:
-            uid_text = message.text.strip()
-
-            if not uid_text.isdigit() or not uid_text.startswith("5"):
-                await message.answer(
-                    "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
-                )
-                return
-
-            uc_amount, price = user_awaiting_uid[user_id]
-            user_awaiting_uid.pop(user_id, None)
-
-            text = (
-                f"UC — {uc_amount}\n"
-                f"Цена — {price} ₽\n"
-                f"UID — {uid_text}"
+    if user_id in support_waiting_users:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"📩 Новое сообщение в поддержку от @{message.from_user.username or 'без юзернейма'} (ID: {user_id})\n\n{message.text}"
             )
+            await message.answer("✅ Ваше сообщение отправлено в поддержку. Ответ поступит в ближайшее время.")
+        except Exception as e:
+            await message.answer("⚠️ Произошла ошибка при отправке сообщения. Попробуйте позже.")
+        finally:
+            support_waiting_users.discard(user_id)
+        return
 
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_{uc_amount}_{price}_{uid_text}")],
-                [InlineKeyboardButton(text="🔄 Другой UID", callback_data="change_uid")],
-                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
-            ])
+    if user_id in user_awaiting_uid:
+        uid_text = message.text.strip()
 
-            await message.answer(text, reply_markup=keyboard)
+        if not uid_text.isdigit() or not uid_text.startswith("5"):
+            await message.answer(
+                "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
+            )
             return
 
-    async def check_and_deliver_orders():
-        """
-        Фоновая задача: периодически проверяем заказы со статусом 'PAID' и delivered = 0.
-        В реальном проекте лучше использовать вебхуки, но это хороший запасной вариант.
-        """
-        while True:
-            rows = get_pending_paid_orders()
-            for row in rows:
-                order_id = row["order_id"]
-                user_id = row["user_id"]
-                uc_amount = row["uc_amount"]
-                uid = row["uid"]
+        uc_amount, price = user_awaiting_uid[user_id]
+        user_awaiting_uid.pop(user_id, None)
 
-                try:
-                    # Отправляем уведомление только если ещё не доставляли
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=(
-                            f"✅ Оплата подтверждена!\n\n"
-                            f"Заказ: {uc_amount} UC\n"
-                            f"UID: {uid}\n\n"
-                            "Ваш заказ обрабатывается. Ожидайте начисления UC в ближайшее время."
-                        )
+        text = (
+            f"UC — {uc_amount}\n"
+            f"Цена — {price} ₽\n"
+            f"UID — {uid_text}"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Оплатить", callback_data=f"pay_{uc_amount}_{price}_{uid_text}")],
+            [InlineKeyboardButton(text="🔄 Другой UID", callback_data="change_uid")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
+        ])
+
+        await message.answer(text, reply_markup=keyboard)
+        return
+
+
+async def check_and_deliver_orders():
+    """
+    Фоновая задача: периодически проверяем заказы со статусом 'PAID' и delivered = 0.
+    В реальном проекте лучше использовать вебхуки, но это хороший запасной вариант.
+    """
+    while True:
+        rows = get_pending_paid_orders()
+        for row in rows:
+            order_id = row["order_id"]
+            user_id = row["user_id"]
+            uc_amount = row["uc_amount"]
+            uid = row["uid"]
+
+            try:
+                # Отправляем уведомление только если ещё не доставляли
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"✅ Оплата подтверждена!\n\n"
+                        f"Заказ: {uc_amount} UC\n"
+                        f"UID: {uid}\n\n"
+                        "Ваш заказ обрабатывается. Ожидайте начисления UC в ближайшее время."
                     )
-                    mark_delivered(order_id)
-                except Exception as e:
-                    print(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
+                )
+                mark_delivered(order_id)
+            except Exception as e:
+                print(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
 
-            await asyncio.sleep(30)
+        await asyncio.sleep(30)
 
-    async def main():
-        # Запускаем фоновую проверку заказов
-        asyncio.create_task(check_and_deliver_orders())
-        await dp.start_polling(bot)
 
-    if __name__ == "__main__":
-        asyncio.run(main())
+async def main():
+    # Запускаем фоновую проверку заказов
+    asyncio.create_task(check_and_deliver_orders())
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
