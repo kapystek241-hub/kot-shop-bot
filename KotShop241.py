@@ -2,10 +2,13 @@ import os
 import hashlib
 import hmac
 import asyncio
+import random
 from datetime import datetime
 from typing import Optional, Dict, List
 
 import aiohttp
+from aiohttp import ClientError
+import json
 import sqlite3
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -35,17 +38,17 @@ def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
         c.execute("""
-                CREATE TABLE IF NOT EXISTS orders (
-                    order_id TEXT PRIMARY KEY,
-                    user_id INTEGER,
-                    uc_amount INTEGER,
-                    price_rub INTEGER,
-                    uid TEXT,
-                    status TEXT DEFAULT 'pending',
-                    delivered INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id TEXT PRIMARY KEY,
+                user_id INTEGER,
+                uc_amount INTEGER,
+                price_rub INTEGER,
+                uid TEXT,
+                status TEXT DEFAULT 'pending',
+                delivered INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 
@@ -65,31 +68,40 @@ def save_order(order_id: str, user_id: int, uc_amount: int, price: int, uid: str
                 (order_id, user_id, uc_amount, price, uid, "pending")
             )
             conn.commit()
-        except Exception as e:
-            print(f"Ошибка сохранения заказа: {e}")
+        except sqlite3.Error as e:
+            print(f"SQLite error при сохранении заказа: {e}")
 
 
 def update_order_status(order_id: str, status: str):
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
-        conn.commit()
+        try:
+            c.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
+            conn.commit()
+        except sqlite3.Error as e:
+            print(f"SQLite error при обновлении статуса заказа: {e}")
 
 
 def mark_delivered(order_id: str):
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("UPDATE orders SET delivered = 1 WHERE order_id = ?", (order_id,))
-        conn.commit()
+        try:
+            c.execute("UPDATE orders SET delivered = 1 WHERE order_id = ?", (order_id,))
+            conn.commit()
+        except sqlite3.Error as e:
+            print(f"SQLite error при отметке delivered: {e}")
 
 
 def get_pending_paid_orders() -> List[sqlite3.Row]:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        # Важно: берём только те, где статус PAID и ещё не доставлены
-        c.execute("SELECT * FROM orders WHERE status = 'PAID' AND delivered = 0")
-        return c.fetchall()
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT * FROM orders WHERE status = 'PAID' AND delivered = 0")
+            return c.fetchall()
+    except sqlite3.Error as e:
+        print(f"SQLite error при получении заказов: {e}")
+        return []
 
 
 user_cart: Dict[int, Dict[str, int]] = {}
@@ -125,10 +137,16 @@ async def create_tinkoff_payment(order_id: str, amount_rub: int, description: st
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    print(f"Tinkoff Init HTTP {resp.status}")
+                    return None
                 data = await resp.json()
                 return data
-        except Exception as e:
-            print(f"Ошибка при создании платежа: {e}")
+        except ClientError as e:
+            print(f"Network error при создании платежа: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error при создании платежа: {e}")
             return None
 
 
@@ -144,6 +162,9 @@ async def check_tinkoff_payment_status(order_id: str) -> Optional[str]:
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    print(f"Tinkoff GetState HTTP {resp.status}")
+                    return None
                 data = await resp.json()
                 if data.get("Success") is True:
                     return data.get("Status")
@@ -151,8 +172,11 @@ async def check_tinkoff_payment_status(order_id: str) -> Optional[str]:
                     error_code = data.get("ErrorCode")
                     print(f"GetState ошибка: {error_code} — {data.get('Message')}")
                     return None
-        except Exception as e:
+        except ClientError as e:
             print(f"Network error при проверке статуса: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error при проверке статуса: {e}")
             return None
 
 
@@ -529,8 +553,8 @@ async def callback_handler(callback: types.CallbackQuery):
                         ADMIN_ID,
                         f"💰 Новый оплаченный заказ!\nOrderID: {order_id}\nСтатус: CONFIRMED"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Не удалось отправить уведомление админу: {e}")
             else:
                 await callback.message.answer("✅ Оплата подтверждена. Заказ уже в обработке.")
 
@@ -648,11 +672,11 @@ async def callback_handler(callback: types.CallbackQuery):
                         mark_delivered(order_id)
                     except Exception as e:
                         print(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
-            except Exception as db_err:
+            except sqlite3.Error as db_err:
                 print(f"Ошибка при работе с БД в фоновой задаче: {db_err}")
 
             # Добавляем случайное смещение 0–15 сек, чтобы не было пиков
-            sleep_time = 30 + (await asyncio.to_thread(lambda: __import__("random").randint(0, 15)))
+            sleep_time = 30 + random.randint(0, 15)
             await asyncio.sleep(sleep_time)
 
     async def on_startup(dp: Dispatcher):
