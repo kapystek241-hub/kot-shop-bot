@@ -76,6 +76,27 @@ def get_tournament_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
+    btn_uc = InlineKeyboardButton(text="💎 UC по ID", callback_data="uc_by_id")
+    btn_other = InlineKeyboardButton(text="🛍️ Другие товары", callback_data="other_items")
+    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="shop")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [btn_uc],
+        [btn_other],
+        [btn_back]
+    ])
+
+
+def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
+    # Здесь можно добавить реальные кнопки с суммами UC
+    btn_example = InlineKeyboardButton(text="Пример: 60 UC — 150 ₽", callback_data="uc_example")
+    btn_back = InlineKeyboardButton(text="↩️ Назад", callback_data="pubg_shop")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [btn_example],
+        [btn_back]
+    ])
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     text = (
@@ -88,9 +109,19 @@ async def cmd_start(message: types.Message):
     await message.answer(text=text, reply_markup=get_start_keyboard())
 
 
-# Обработчик ключевых слов (Магазин, Поддержка и т.д.)
-# Используем F.text вместо Text из aiogram.filters
-@dp.message(F.text.lower().in_(["магазин", "поддержка", "ошибка", "нужна помощь", "турнир", "акции", "акция", "розыгрыш"]))
+# Обработчик ключевых слов для открытия «Меню»
+@dp.message(F.text.lower().in_(["меню"]))
+async def handle_menu_keyword(message: types.Message):
+    await message.answer(
+        "📋 Главное меню KotShop241:\nВыберите нужный раздел:",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+
+# Обработчик остальных ключевых слов (Магазин, Поддержка и т.д.)
+@dp.message(F.text.lower().in_(
+    ["магазин", "поддержка", "ошибка", "нужна помощь", "турнир", "акции", "акция", "розыгрыш"]
+))
 async def handle_keywords(message: types.Message):
     text_lower = message.text.lower()
     if text_lower == "магазин":
@@ -108,6 +139,23 @@ async def handle_keywords(message: types.Message):
         await message.answer("🎁 Раздел «Розыгрыш» — в разработке.", reply_markup=get_main_menu_keyboard())
 
 
+# Ключевые слова для PUBG Mobile и UC
+@dp.message(F.text.lower().in_(["pubg", "пабг", "купить uc", "купить юси"]))
+async def handle_pubg_keywords(message: types.Message):
+    await message.answer(
+        "Выберите интересующий раздел:",
+        reply_markup=get_pubg_main_keyboard()
+    )
+
+
+@dp.message(F.text.lower().in_(["юси", "uc"]))
+async def handle_uc_keywords(message: types.Message):
+    await message.answer(
+        "Выберите нужное количество UC",
+        reply_markup=get_uc_amount_keyboard()
+    )
+
+
 # Основной обработчик callback-запросов
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
@@ -123,8 +171,32 @@ async def callback_handler(callback: types.CallbackQuery):
 
     # Документация
     elif data == "docs":
+        text = (
+            "Название магазина: ***KotShop241***\n\n"
+            "Магазин является официальным и использует законные способы предоставления игровой валюты "
+            "или пополнения сервисов в РФ и других странах.\n\n"
+            "ИНН организации: 661912653571\n"
+            "Для проверки вы можете использовать ресурс ФНС.\n\n"
+            "В целях вашей безопасности сторонние ссылки не будут размещаться, за исключением банковских операций. "
+            "Для получения чека требуется написать в поддержку внутри Telegram-бота, раздел находится: Меню → Поддержка → Заполнение формы обращения. "
+            "Чек предоставляется только по просьбе.\n\n"
+            "Проект является коммерческим и не несёт ответственности в случае неправильно указанных данных при заполнении формы покупки. "
+            "В случае если ошибка случилась и товар не доставлен, следует написать в поддержку.\n\n"
+            "При проведении турниров от магазина KotShop241 участники, которые подтвердили участие, автоматически соглашаются с правилами, "
+            "которые находятся в разделе: Меню → Турнир → Правила участия. Штрафы предусмотрены в том же разделе, "
+            "в случае нарушения будут использованы санкции, которые указаны.\n\n"
+            "Для подачи апелляции используйте контакты ниже.\n"
+            "Магазин имеет полное право заблокировать использование сервиса в случае возникновения расследования по отношению к покупателю. "
+            "В случае если вы не согласны с блокировкой, следует написать в поддержку по ссылкам ниже.\n\n"
+            "Связь по почте: Kotshop241@gmail.com\n"
+            "Связь с поддержкой внутри Telegram: @KotShop2415"
+        )
         await callback.message.edit_text(
-            "📖 Документация магазина: правила покупок, возвратов, условия розыгрышей и т.д. (в разработке)."
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Меню", callback_data="menu_main")]
+            ])
         )
         await callback.answer()
 
@@ -137,8 +209,31 @@ async def callback_handler(callback: types.CallbackQuery):
         await callback.message.edit_text(text, reply_markup=get_shop_keyboard())
         await callback.answer()
 
-    elif data in ["pubg_shop", "steam_shop"]:
-        await callback.message.edit_text("🛒 Этот раздел находится в разработке.")
+    elif data in ["pubg_shop"]:
+        await callback.message.edit_text(
+            "Выберите интересующий раздел:",
+            reply_markup=get_pubg_main_keyboard()
+        )
+        await callback.answer()
+
+    elif data in ["steam_shop"]:
+        await callback.message.edit_text("🖥️ Этот раздел находится в разработке.")
+        await callback.answer()
+
+    # UC по ID
+    elif data == "uc_by_id":
+        await callback.message.edit_text(
+            "Выберите нужное количество UC",
+            reply_markup=get_uc_amount_keyboard()
+        )
+        await callback.answer()
+
+    elif data == "other_items":
+        await callback.message.edit_text("🛍️ Другие товары — в разработке.")
+        await callback.answer()
+
+    elif data == "uc_example":
+        await callback.message.edit_text("Пример товара: 60 UC за 150 ₽. Оформление через поддержку или в будущем через корзину.")
         await callback.answer()
 
     # Поддержка
@@ -181,6 +276,10 @@ async def callback_handler(callback: types.CallbackQuery):
     elif data == "back_to_start":
         await cmd_start(callback.message)
         await callback.answer()
+
+    elif data == "menu_main":
+        # Уже обработано выше, но на всякий случай
+        pass
 
 
 # Простой механизм ожидания сообщения для поддержки (без полноценного FSM)
