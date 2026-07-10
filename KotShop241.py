@@ -1,27 +1,135 @@
 import asyncio
 import os
+import hashlib
+import hmac
+import json
+from datetime import datetime
+from typing import Optional, Dict, Any
+
+import aiohttp
+import sqlite3
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения из .env
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("Токен не найден. Проверьте, что в файле .env есть строка BOT_TOKEN=ваш_токен")
+TERMINAL_KEY = os.getenv("TERMINAL_KEY")
+TERMINAL_SECRET = os.getenv("TERMINAL_SECRET")
 
-ADMIN_ID = 7309972832  # ID администратора
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не найден в .env")
+if not TERMINAL_KEY or not TERMINAL_SECRET:
+    raise ValueError("Нужны TERMINAL_KEY и TERMINAL_SECRET в .env")
+
+ADMIN_ID = 7309972832
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Хранилища (в продакшене лучше использовать БД)
-user_cart = {}          # user_id -> {"uc_amount": int, "price": int}
-user_awaiting_uid = {}  # user_id -> (uc_amount, price)
+# --- База данных (SQLite) ---
+DB_PATH = "payments.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id TEXT PRIMARY KEY,
+            user_id INTEGER,
+            uc_amount INTEGER,
+            price_rub INTEGER,
+            uid TEXT,
+            status TEXT DEFAULT 'pending',
+            delivered INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def save_order(order_id: str, user_id: int, uc_amount: int, price: int, uid: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            INSERT INTO orders (order_id, user_id, uc_amount, price_rub, uid, status, delivered)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+            ON CONFLICT(order_id) DO NOTHING
+            """,
+            (order_id, user_id, uc_amount, price, uid, "pending")
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+def update_order_status(order_id: str, status: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
+    conn.commit()
+    conn.close()
+
+def mark_delivered(order_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE orders SET delivered = 1 WHERE order_id = ?", (order_id,))
+    conn.commit()
+    conn.close()
+
+def get_pending_paid_orders():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM orders WHERE status = 'PAID' AND delivered = 0")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+# Хранилища (в памяти, для сессии)
+user_cart: Dict[int, Dict[str, int]] = {}
+user_awaiting_uid: Dict[int, tuple] = {}
 support_waiting_users = set()
 
+# --- Т‑Банк API ---
+
+def sign_payload(payload: dict) -> str:
+    sorted_keys = sorted(payload.keys())
+    sign_str = "".join(f"{k}={payload[k]}" for k in sorted_keys)
+    sign = hmac.new(
+        TERMINAL_SECRET.encode("utf-8"),
+        sign_str.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    return sign
+
+async def create_tinkoff_payment(order_id: str, amount_rub: int, description: str) -> Optional[dict]:
+    url = "https://securepay.tinkoff.ru/v2/Init"
+    payload = {
+        "TerminalKey": TERMINAL_KEY,
+        "Amount": amount_rub * 100,  # копейки
+        "OrderId": order_id,
+        "Description": description,
+    }
+    token = sign_payload(payload)
+    payload["Token"] = token
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload) as resp:
+                data = await resp.json()
+                return data
+        except Exception:
+            return None
+
+# --- Клавиатуры ---
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -29,17 +137,17 @@ def get_start_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Документация магазина", callback_data="docs")]
     ])
 
-
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Магазин", callback_data="shop")],
         [InlineKeyboardButton(text="💬 Поддержка", callback_data="support")],
-        [InlineKeyboardButton(text="🏆 Турнир", callback_data="tournament"),
-         InlineKeyboardButton(text="🔥 Акции", callback_data="promo")],
+        [
+            InlineKeyboardButton(text="🏆 Турнир", callback_data="tournament"),
+            InlineKeyboardButton(text="🔥 Акции", callback_data="promo")
+        ],
         [InlineKeyboardButton(text="🎁 Розыгрыш", callback_data="draw")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_start")]
     ])
-
 
 def get_shop_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -48,7 +156,6 @@ def get_shop_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
 
-
 def get_support_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Написать через Telegram", callback_data="support_tg")],
@@ -56,13 +163,11 @@ def get_support_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
 
-
 def get_tournament_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Правила проведения турнира", callback_data="tournament_rules")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="menu_main")]
     ])
-
 
 def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -71,8 +176,6 @@ def get_pubg_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="↩️ Назад", callback_data="shop")]
     ])
 
-
-# Полный список UC с ценами (как в ТЗ)
 UC_PRICES = [
     ("60 UC — 74 ₽", "uc_select_60"),
     ("120 UC — 145 ₽", "uc_select_120"),
@@ -107,7 +210,7 @@ def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
     row = []
     for text, data in UC_PRICES:
         row.append(InlineKeyboardButton(text=text, callback_data=data))
-        if len(row) == 2:  # По 2 кнопки в ряд
+        if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
@@ -115,6 +218,7 @@ def get_uc_amount_keyboard() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="pubg_shop")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# --- Хендлеры бота ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -125,11 +229,9 @@ async def cmd_start(message: types.Message):
     )
     await message.answer(text=text, reply_markup=get_start_keyboard())
 
-
 @dp.message(F.text.lower().in_(["меню"]))
 async def handle_menu_keyword(message: types.Message):
     await message.answer("📋 Главное меню KotShop241:\nВыберите нужный раздел:", reply_markup=get_main_menu_keyboard())
-
 
 @dp.message(F.text.lower().in_(
     ["магазин", "поддержка", "ошибка", "нужна помощь", "турнир", "акции", "акция", "розыгрыш"]
@@ -150,23 +252,19 @@ async def handle_keywords(message: types.Message):
     elif t == "розыгрыш":
         await message.answer("🎁 Раздел «Розыгрыш» — в разработке.", reply_markup=get_main_menu_keyboard())
 
-
 @dp.message(F.text.lower().in_(["pubg", "пабг", "купить uc", "купить юси"]))
 async def handle_pubg_keywords(message: types.Message):
     await message.answer("Выберите интересующий раздел:", reply_markup=get_pubg_main_keyboard())
 
-
 @dp.message(F.text.lower().in_(["юси", "uc"]))
 async def handle_uc_keywords(message: types.Message):
     await message.answer("Выберите нужное количество UC", reply_markup=get_uc_amount_keyboard())
-
 
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
     data = callback.data
     user_id = callback.from_user.id
 
-    # Главное меню
     if data == "menu_main":
         await callback.message.edit_text(
             "📋 Главное меню KotShop241:\nВыберите нужный раздел:",
@@ -174,7 +272,6 @@ async def callback_handler(callback: types.CallbackQuery):
         )
         await callback.answer()
 
-    # Документация
     elif data == "docs":
         text = (
             "Название магазина: ***KotShop241***\n\n"
@@ -191,7 +288,6 @@ async def callback_handler(callback: types.CallbackQuery):
         )
         await callback.answer()
 
-    # Магазин
     elif data == "shop":
         await callback.message.edit_text("🛒 Раздел «Магазин»", reply_markup=get_shop_keyboard())
         await callback.answer()
@@ -204,7 +300,6 @@ async def callback_handler(callback: types.CallbackQuery):
         await callback.message.edit_text("🖥️ Этот раздел находится в разработке.")
         await callback.answer()
 
-    # UC по ID
     elif data == "uc_by_id":
         user_cart.pop(user_id, None)
         user_awaiting_uid.pop(user_id, None)
@@ -218,10 +313,9 @@ async def callback_handler(callback: types.CallbackQuery):
         await callback.message.edit_text("🛍️ Другие товары — в разработке.")
         await callback.answer()
 
-    # Выбор товара
     elif data.startswith("uc_select_"):
         mapping = {
-            "uc_select_60": (60, 74),
+                        "uc_select_60": (60, 74),
             "uc_select_120": (120, 145),
             "uc_select_180": (180, 221),
             "uc_select_240": (240, 294),
@@ -263,7 +357,6 @@ async def callback_handler(callback: types.CallbackQuery):
         )
         await callback.answer()
 
-    # Подтверждение: просим ввести UID
     elif data == "confirm_uid":
         if user_id not in user_cart:
             await callback.answer("Сначала выберите товар.", show_alert=True)
@@ -275,7 +368,6 @@ async def callback_handler(callback: types.CallbackQuery):
         )
         await callback.answer()
 
-    # Поддержка
     elif data == "support":
         await callback.message.edit_text(
             "💬 Опишите вашу ошибку или вопрос.\nПоддержка работает с 9:00 до 23:00 по МСК.",
@@ -293,25 +385,25 @@ async def callback_handler(callback: types.CallbackQuery):
         support_waiting_users.add(user_id)
         await callback.answer()
 
-    # Турнир
     elif data == "tournament":
-        await callback.message.edit_text("🏆 Ознакомьтесь с правилами проведения турнира.", reply_markup=get_tournament_keyboard())
+        await callback.message.edit_text(
+            "🏆 Ознакомьтесь с правилами проведения турнира.",
+            reply_markup=get_tournament_keyboard()
+        )
         await callback.answer()
+
     elif data == "tournament_rules":
         await callback.message.edit_text("📖 Правила турнира: (в разработке)")
         await callback.answer()
 
-    # Акции/Розыгрыш
     elif data in ["promo", "draw"]:
         await callback.message.edit_text("🔥 Акции / 🎁 Розыгрыш — в разработке.")
         await callback.answer()
 
-    # Назад к старту
     elif data == "back_to_start":
         await cmd_start(callback.message)
         await callback.answer()
 
-    # Обработка оплаты
     elif data.startswith("pay_"):
         parts = data.split("_")
         if len(parts) != 4:
@@ -321,7 +413,25 @@ async def callback_handler(callback: types.CallbackQuery):
         price = int(parts[2])
         uid_text = parts[3]
 
-        payment_link = f"https://example.com/pay?amount={price}&uid={uid_text}"
+        order_id = f"order_{user_id}_{int(datetime.now().timestamp())}"
+        save_order(order_id, user_id, uc_amount, price, uid_text)
+
+        payment_result = await create_tinkoff_payment(order_id, price, f"UC для PUBG Mobile, UID: {uid_text}")
+
+        if not payment_result or payment_result.get("ErrorCode"):
+            await callback.message.edit_text(
+                "⚠️ Ошибка при создании платежа. Попробуйте позже или обратитесь в поддержку."
+            )
+            await callback.answer()
+            return
+
+        payment_url = payment_result.get("PaymentURL")
+        if not payment_url:
+            await callback.message.edit_text(
+                "⚠️ Не удалось получить ссылку на оплату. Обратитесь в поддержку."
+            )
+            await callback.answer()
+            return
 
         await callback.message.edit_text(
             f"UC — {uc_amount}\n"
@@ -329,7 +439,7 @@ async def callback_handler(callback: types.CallbackQuery):
             f"UID — {uid_text}\n\n"
             "Нажмите кнопку ниже, чтобы перейти к оплате:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_link)],
+                [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)],
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")]
             ])
         )
@@ -354,16 +464,14 @@ async def callback_handler(callback: types.CallbackQuery):
             "🆔 Пожалуйста, отправьте новый UID PUBG Mobile.\nОн должен начинаться на 5 и состоять только из цифр."
         )
         await callback.answer()
-
     else:
         await callback.answer("Неизвестная команда.", show_alert=True)
 
-# Обработчик обычных сообщений (ввод UID, поддержка)
+
 @dp.message()
 async def handle_messages(message: types.Message):
     user_id = message.from_user.id
 
-    # Если пользователь сейчас в режиме «написать в поддержку»
     if user_id in support_waiting_users:
         try:
             await bot.send_message(
@@ -377,11 +485,9 @@ async def handle_messages(message: types.Message):
             support_waiting_users.discard(user_id)
         return
 
-    # Если пользователь ожидает ввода UID
     if user_id in user_awaiting_uid:
         uid_text = message.text.strip()
 
-        # Проверка: UID должен состоять только из цифр и начинаться на 5
         if not uid_text.isdigit() or not uid_text.startswith("5"):
             await message.answer(
                 "❌ UID должен состоять только из цифр и начинаться на 5.\n\nПожалуйста, отправьте корректный UID PUBG Mobile."
@@ -389,7 +495,7 @@ async def handle_messages(message: types.Message):
             return
 
         uc_amount, price = user_awaiting_uid[user_id]
-        user_awaiting_uid.pop(user_id, None)  # убираем ожидание
+        user_awaiting_uid.pop(user_id, None)
 
         text = (
             f"UC — {uc_amount}\n"
@@ -405,7 +511,40 @@ async def handle_messages(message: types.Message):
         return
 
 
+async def check_and_deliver_orders():
+    """
+    Периодически проверяем заказы со статусом 'PAID' и флагом delivered = 0.
+    В реальном проекте лучше использовать отдельный сервис для вебхуков,
+    а здесь делаем простую фоновую проверку.
+    """
+    while True:
+        rows = get_pending_paid_orders()
+        for row in rows:
+            order_id = row["order_id"]
+            user_id = row["user_id"]
+            uc_amount = row["uc_amount"]
+            uid = row["uid"]
+
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"✅ Оплата подтверждена!\n\n"
+                        f"Заказ: {uc_amount} UC\n"
+                        f"UID: {uid}\n\n"
+                        "Ваш заказ обрабатывается. Ожидайте начисления UC в ближайшее время."
+                    )
+                )
+                mark_delivered(order_id)
+            except Exception:
+                # Пользователь мог заблокировать бота — просто пропускаем
+                pass
+
+        await asyncio.sleep(30)
+
+
 async def main():
+    asyncio.create_task(check_and_deliver_orders())
     await dp.start_polling(bot)
 
 
